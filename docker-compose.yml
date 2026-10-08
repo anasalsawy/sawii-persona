@@ -1,0 +1,9 @@
+services:
+  persona:
+    build: .
+    env_file: .env
+    ports: ["8800:8800"]
+    volumes: ["persona-data:/data"]
+    restart: unless-stopped
+volumes:
+  persona-data:
