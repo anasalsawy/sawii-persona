@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import random
 import sys
 import time
 
@@ -65,7 +64,7 @@ class SleepTests(MindCase):
             await self.mind.subconscious.ingest(p, None, f"I'm SO scared... {i}!!", f"I'm here {i}", chord={"fear": .9},
                                                 salience=3)
         ft = FineTuner(self.settings, self.mind.store, self.mind.subconscious, self.mind.a)
-        sleep = Sleep(self.mind, ft, rng=random.Random(2))
+        sleep = Sleep(self.mind, ft)
         report = await sleep.run(await get_persona(self.mind.store, self.pid))
         self.assertEqual(report["narrative"], "rewritten")
         self.assertEqual(report["psych_profile"], "rewritten")
@@ -113,7 +112,7 @@ class InitiativeTests(MindCase):
         await super().asyncSetUp()
         self.settings.quiet_hours = ""
         self.channels = FakeChannels(self.settings)
-        self.init = Initiative(self.mind, self.channels, rng=random.Random(3))
+        self.init = Initiative(self.mind, self.channels)
 
     async def test_reminder_fires_exactly_once(self):
         await self.mind.chat(self.pid, MSG)
@@ -138,7 +137,7 @@ class InitiativeTests(MindCase):
         self.assertIn("outreach", [a["action"] for a in acts])
         # daily cap reached -> held
         self.settings.daily_outreach_cap = 1
-        await self.mind.store.insert("thoughts", persona_id=self.pid, text="another", source="wander",
+        await self.mind.store.insert("thoughts", persona_id=self.pid, text="another", source="reflection",
                                      score=0.9, created_at=time.time())
         acts = await self.init.tick()
         gate = [a for a in acts if a["action"] == "gate"][0]
@@ -147,19 +146,10 @@ class InitiativeTests(MindCase):
     async def test_quiet_hours_hold(self):
         self.settings.quiet_hours = "00:00-23:59"
         await self.mind.store.update("personas", self.pid, last_user_at=time.time() - 3600)
-        await self.mind.store.insert("thoughts", persona_id=self.pid, text="x", source="wander", score=0.9,
+        await self.mind.store.insert("thoughts", persona_id=self.pid, text="x", source="reflection", score=0.9,
                                      created_at=time.time())
         acts = await self.init.tick()
         self.assertEqual([a for a in acts if a["action"] == "gate"][0]["verdict"], "hold")
-
-    async def test_wander_creates_thought(self):
-        await self.mind.chat(self.pid, MSG)
-        await self.mind.drain()
-        p = await get_persona(self.mind.store, self.pid)
-        t = await self.init.wander(p)
-        self.assertIn("Maya", t)
-        rows = await self.mind.store.all("SELECT source, score FROM thoughts WHERE source='wander'")
-        self.assertEqual(len(rows), 1)
 
     async def test_sms_channel_pick(self):
         await self.mind.store.update("personas", self.pid, contact='{"sms":"+15550001"}', preferred_channel="sms")
@@ -234,7 +224,7 @@ class InitiativeSafetyTests(MindCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.settings.quiet_hours = ""
-        self.init = Initiative(self.mind, FakeChannels(self.settings), rng=random.Random(3))
+        self.init = Initiative(self.mind, FakeChannels(self.settings))
 
     async def test_reminder_never_lost_when_model_skips(self):
         from sawii_persona.llm import ScriptedLLM

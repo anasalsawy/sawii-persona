@@ -28,7 +28,8 @@ def transcript(tail: list[dict], user_text: str, reply: str, limit: int = 6000) 
 
 
 async def review(llm: LLM, *, persona: dict, user_text: str, reply: str, tail: list[dict], recall_text: str,
-                 consults: list[dict], loops: list[dict], c_brief: str, at: float) -> dict:
+                 consults: list[dict], loops: list[dict], c_brief: str, at: float, a_chord: dict | None = None,
+                 rules: list[dict] | None = None) -> dict:
     tz = persona.get("timezone") or "UTC"
     parts = [f"Local time now: {local_dt(at, tz).isoformat(timespec='minutes')} ({tz})"]
     if c_brief:
@@ -37,6 +38,12 @@ async def review(llm: LLM, *, persona: dict, user_text: str, reply: str, tail: l
         parts.append("Open loops:\n" + "\n".join(
             f"#{lp['id']} [{lp['kind']}] {lp['text']}" + (f" (due {local_dt(lp['due_at'], tz).isoformat(timespec='minutes')})"
                                                            if lp["due_at"] else "") for lp in loops[:20]))
+    if rules:
+        parts.append("The person's standing requests (drop by id if they lift one):\n" + "\n".join(
+            f"#{r['id']} {r['text']}" for r in rules))
+    if a_chord:
+        from ..emotion import render
+        parts.append(f"How A declared it feels after this answer: {render(a_chord)}")
     if recall_text:
         parts.append("Memories A was given this turn:\n" + recall_text[:3000])
     if consults:
@@ -61,5 +68,8 @@ async def review(llm: LLM, *, persona: dict, user_text: str, reply: str, tail: l
         "loops": [lp for lp in (data.get("loops") or []) if isinstance(lp, dict)][:8],
         "conscience": str(data.get("conscience", "") or "").strip()[:500],
         "afterthought": str(data.get("afterthought", "") or "").strip()[:600],
+        "dropped": [d for d in (data.get("dropped") or []) if isinstance(d, dict)][:3],
+        "rules": [r for r in (data.get("rules") or []) if isinstance(r, dict)][:4],
+        "regulate": str(data.get("regulate", "") or "").strip()[:300],
         "parsed": bool(data),
     }

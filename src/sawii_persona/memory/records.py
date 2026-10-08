@@ -149,7 +149,8 @@ class Memory:
                 salience = 1
             clean.append({"layer": layer, "author": author, "kind": kind, "text": text, "quote": quote,
                           "anchor": str(it.get("anchor", "") or "")[:200],
-                          "chord": emotion.normalize(it.get("chord")), "salience": salience})
+                          "chord": emotion.normalize(it.get("chord")), "salience": salience,
+                          "tender": 1 if it.get("tender") in (True, 1, "true", "yes") else 0})
         if not clean:
             return []
         embed_texts = [f"{c['anchor']} | {c['text']} | {c['quote']}" for c in clean]
@@ -160,7 +161,7 @@ class Memory:
             ids.append(await self.store.insert(
                 "layers", persona_id=pid, event_id=event_id, layer=c["layer"], author=c["author"],
                 kind=c["kind"], text=c["text"], quote=c["quote"], anchor=c["anchor"], chord=jdump(c["chord"]),
-                salience=c["salience"], embedding=to_blob(v), embed_model=model,
+                salience=c["salience"], tender=c["tender"], embedding=to_blob(v), embed_model=model,
                 hvec=to_blob(hash_embed(t)), created_at=ts))
         await self._supersede(pid, ids)
         return ids
@@ -362,6 +363,33 @@ class Memory:
             "AND notified_at = 0 ORDER BY due_at", pid, at or now())
 
     # ------------------------------------------------------------------ verdicts (B -> A)
+    # ---------------------------------------------------------------- standing requests
+    async def rules(self, pid: int) -> list[dict]:
+        return await self.store.all("SELECT * FROM rules WHERE persona_id = ? AND status = 'active' ORDER BY id", pid)
+
+    async def apply_rules(self, pid: int, ops: list[dict], sources: list[str]) -> int:
+        """B keeps the person's standing requests. Adding one needs their exact words."""
+        n = 0
+        for op in ops:
+            kind = str(op.get("op", "add")).lower()
+            if kind == "drop":
+                try:
+                    rid = int(op.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                n += await self.store.run("UPDATE rules SET status='dropped' WHERE id = ? AND persona_id = ?", rid, pid)
+                continue
+            text = str(op.get("text", "")).strip()[:300]
+            quote = ground(str(op.get("quote", "") or ""), sources)
+            if not text or not quote:
+                continue
+            if await self.store.one("SELECT id FROM rules WHERE persona_id = ? AND status='active' AND text = ?",
+                                    pid, text):
+                continue
+            await self.store.insert("rules", persona_id=pid, text=text, quote=quote, created_at=now())
+            n += 1
+        return n
+
     async def record_verdict(self, pid: int, turn_id: int | None, level: str, rationale: str,
                              findings: list) -> int:
         level = level if level in ("GREEN", "YELLOW", "RED") else "YELLOW"
@@ -384,7 +412,7 @@ class Memory:
     async def inspect(self, pid: int, limit: int = 200) -> dict:
         layers = await self.store.all(
             "SELECT id, event_id, layer, author, kind, text, quote, anchor, chord, salience, status, "
-            "interpretations, created_at FROM layers WHERE persona_id = ? AND status != 'wiped' "
+            "interpretations, tender, created_at FROM layers WHERE persona_id = ? AND status != 'wiped' "
             "ORDER BY id DESC LIMIT ?", pid, limit)
         for row in layers:
             row["chord"] = jload(row["chord"], {})
@@ -397,6 +425,9 @@ class Memory:
             "layers": layers, "hypotheses": hyps,
             "entities": await self.store.all("SELECT * FROM entities WHERE persona_id = ?", pid),
             "loops": await self.store.all("SELECT * FROM loops WHERE persona_id = ? ORDER BY id DESC LIMIT 100", pid),
+            "standing_requests": await self.rules(pid),
+            "thoughts": await self.store.all("SELECT id, source, text, status, created_at FROM thoughts "
+                                             "WHERE persona_id = ? ORDER BY id DESC LIMIT 50", pid),
         }
 
     async def wipe(self, pid: int, layer_id: int) -> bool:

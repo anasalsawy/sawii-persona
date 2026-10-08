@@ -44,8 +44,9 @@ message ─┬─► consultants start thinking (parallel, never awaited)
    C observe → user's chord · notes · readings · hypotheses (new/confirm/contradict)
                · entities · reinterpretations · brief for B
    A diary   → fact layer
-   priming   → near-misses gain activation; surfaced memories warm their neighbours
-   late recall → slower, wider search; a find becomes "oh wait, I just remembered…" in seconds
+   B rules   → standing requests ("keep it short") · dropped threads · regulation of A's feeling
+   C extras  → prediction of their next message · disagreement with B (ambivalence) · tender marks
+   B deep    → slower, wider look back now that A has answered → kept for next time
    juice     → raw turn kept byte-exact if emotionally high-variance
 ```
 
@@ -60,40 +61,48 @@ events (one per moment)
        reading     C   behaviour + hedged inference        quote REQUIRED ("went quiet when…")
        afterthought B  revisit-and-revise
   each layer: embedding (semantic) + local hash vector, status (active/superseded/wiped),
-              interpretations[] (reconsolidation: the quote never changes), activation (priming)
+              interpretations[] (reconsolidation: the quote never changes), tender (C: held back)
 
 hypotheses   C's psyche layer: claim + quotes + confidence that fades (half-life 21 d)
 entities     people / projects as first-class things
 loops        B's working state: tasks, promises, reminders - mutable (you check off a task,
              never a fact)
 verdicts     B's integrity record for A
-thoughts     the inner monologue: wander, dream, sudden, afterthought, correction, deep
+rules        standing requests the person made about how to be talked to (B keeps them)
+thoughts     the inner monologue: reflection, recollection, sudden, dream, afterthought, correction, deep
 juice        the subconscious buffer (never visible to A)
 ```
 
 **Recall lanes**: topic (semantic + lexical) · mood (chord resonance, emotion → text) · entity ·
-unaddressed (said, never followed up) · intrusion (rare, off-topic, "use only if it fits").
+unaddressed (said, never followed up). Nothing random. Tender moments (C marked them painful) are held
+back unless the person is raising the subject right now.
 Candidates expand to the **whole moment** (all layers), are budgeted, and every line is labeled with
 layer, author, date, surface and feeling.
 
 **Supersession**: a new preference/plan/detail that revises an old one on the same topic ("actually…",
 "not anymore", or opposite polarity) marks the old one superseded - kept, linked, no longer recalled.
 
-## 4. Remembering all of a sudden
+## 4. Remembering all of a sudden - two minds, not a trick
 
 ```
-cue (each turn)                               activation (fades, half-life 90 min)
-  │                                              ▲
-  ├─ half-touched memories ──── +gain ──────────┤
-  ├─ someone named ──────────── +gain ──────────┤
-  ├─ the feeling rhymes ─────── +gain ──────────┤       ≥ 1.0  ──►  POP
-  └─ surfaced memory ── chain ─► same moment / same person / same feeling / similar words
-                                                  (one hop per cue: the chain walks across turns)
-
-POP  during a conversation → "=== just came back to you, out of nowhere ===" in A's next context
-     while you are away    → thought → voicing gate → "just remembered…" message
-LATE RECALL (after each answer) → best missed memory → "oh wait…" pop-up seconds later
+message lands ──┬──► A starts answering (streams, sentence by sentence)
+                │         ▲            ▲
+                │         │ inner voice│ at the next sentence end
+                ├──► B: shortlist (crude, wide) ─► B judges: does anything REALLY connect?
+                │        found while A talks  → A is stopped, hears it, continues the SAME reply
+                │        found after A is done → "oh wait, I just remembered…" message
+                ├──► B: live check of A's finished sentences (false? broke a standing request?)
+                │        → A corrects itself out loud: "actually, no - …"
+                └──► C: gut read of the message (tone; surprise vs C's prediction)
+after the turn ────► B: slower, wider look (A's reply included) → offered next conversation
+while away ────────► B: once per conversation, thinks back and searches the longer past
+A stuck ───────────► tool try_to_remember → B finds it in the record (or says nothing comes back)
 ```
+
+Rules that keep it honest: the search only gathers; **B's judgement decides**. B may only point at
+records it was shown, and what A hears is **rendered from the stored record** (exact quotes, dated),
+with B's one-line "connection" labeled as B's view. Whether A is interrupted or follows up later
+depends only on whether B finished thinking before A finished talking - no dice, no timers.
 
 ## 5. Initiative
 
@@ -101,9 +110,8 @@ LATE RECALL (after each answer) → best missed memory → "oh wait…" pop-up s
 heartbeat (every 60 s, per persona)
   reminders due ─────────────────────────────────► always sent (you asked)
   sleep due? ────────────────────────────────────► sleep cycle
-  every 30 ticks: wander pass ───────────────────► thought stream
-  idle pops ─────────────────────────────────────► thought stream
-  candidates: corrections · afterthoughts · sudden · deep results · wander · dream · long silence
+  every 30 ticks: B reflects (once per quiet conversation) ► thought stream
+  candidates: corrections · afterthoughts · sudden · recollections · reflections · dream · deep · silence
        │
    voicing gate + INHIBITOR:  score ≥ 0.6 · not quiet hours · not mid-conversation
        │                      (except "oh wait"/corrections) · daily cap · min gap
@@ -116,10 +124,12 @@ heartbeat (every 60 s, per persona)
 ## 6. Sleep (nightly at SAWII_SLEEP_HOUR, local, when idle)
 
 ```
-narrative      A rewrites its own first-person story from the day's memory
-psych profile  C consolidates readings + hypotheses (hedged, ≤320 words)
+narrative      A rewrites its own first-person story from the day's memory; B audits it, strikes the unsupported
+psych profile  C consolidates readings + hypotheses (hedged, ≤320 words); B strikes lines without evidence
+mirror         C reads A's recent replies → habits A cannot see in itself
+calibration    B groups A's recent mistakes → "where you tend to be wrong"
 fade           unconfirmed hypotheses fade (accessibility, not deletion); stale thoughts decay
-dream          far associations between distant memories → thoughts
+dream          far associations between memories far apart in time (deterministic picks) → B audit → thoughts
 juice          export verbatim (archive ndsmc-raw/2 + chat training file, 80% juice / 20% replay)
                → mark exported → train (Fireworks LoRA | your command | none)
                → bake on success (A's model switches to the new adapter) / stay raw on failure

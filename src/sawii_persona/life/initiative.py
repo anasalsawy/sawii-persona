@@ -4,7 +4,7 @@ Every heartbeat, per persona:
   * reminders that came due           (always delivered - the person asked for them)
   * B's required corrections and afterthoughts ("oh, one more thing...")
   * finished workshop jobs
-  * the thought stream: wander-pass thoughts and dream associations
+  * the thought stream: B's reflections and recollections, dream associations
   * long silences ("haven't heard from you in a while")
 Then the voicing gate and its twin, the inhibitor: most thoughts are never said.
 Quiet hours, a daily cap, a minimum gap, and "don't interrupt a live conversation"
@@ -15,17 +15,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import time
 
-from ..brains.prompts import OUTREACH, OUTREACH_CHECK, WANDER
+from ..brains import rememberer
+from ..brains.prompts import OUTREACH, OUTREACH_CHECK, REMEMBER_IDLE
 from ..channels.adapters import Channels
 from ..identity import get_persona
 from ..llm import extract_json, strip_reasoning
 from ..profiles import persona_frame
 from ..store import jload, now
 from ..timesense import fmt_duration, in_quiet_hours, local_dt
-from .. import emotion
 
 log = logging.getLogger(__name__)
 
@@ -33,11 +32,10 @@ SPEAK_THRESHOLD = 0.6
 
 
 class Initiative:
-    def __init__(self, mind, channels: Channels, sleep=None, rng: random.Random | None = None):
+    def __init__(self, mind, channels: Channels, sleep=None):
         self.mind = mind
         self.channels = channels
         self.sleep = sleep
-        self.rng = rng or random.Random()
         self.ticks = 0
         self._task: asyncio.Task | None = None
 
@@ -103,24 +101,12 @@ class Initiative:
         if self.sleep is not None and self.sleep.due(persona, at):
             actions.append({"persona": pid, "action": "sleep", "report": await self.sleep.run(persona)})
             persona = await get_persona(self.mind.store, pid)
-        # 3. wander: the mind drifts between conversations
-        recently_active = persona["last_user_at"] and at - persona["last_user_at"] < 14 * 86400
-        if recently_active and self.ticks % max(1, self.mind.s.wander_every_ticks) == 0:
-            thought = await self.wander(persona)
+        # 3. reflection: while they are away, B thinks back over what you last talked about
+        if self.ticks % max(1, self.mind.s.reflect_every_ticks) == 0:
+            thought = await self.reflect(persona, at)
             if thought:
-                actions.append({"persona": pid, "action": "wander", "thought": thought})
-        # 4. memories primed earlier pop up while idle -> "I just remembered..."
-        if persona["last_user_at"] and at - persona["last_user_at"] > 20 * 60:
-            fmt = lambda ts: local_dt(ts, persona["timezone"]).strftime("%d %b")  # noqa: E731
-            for r in await self.mind.spontaneous.pops(persona, limit=1, at=at):
-                said = f' - they said: "{r["quote"]}"' if r["quote"] else ""
-                await self.mind.store.insert(
-                    "thoughts", persona_id=pid, source="sudden", score=0.55 + 0.1 * min(2.0, r["level"]),
-                    text=f"Out of nowhere, while they were away, you remembered: {r['text']}{said} (from "
-                         f"{fmt(r['created_at'])}). Reach out only if it is warm or useful, like a friend texting "
-                         f"'just remembered...'.", ref=str(r["id"]), created_at=at)
-                actions.append({"persona": pid, "action": "pop", "layer": r["id"]})
-        # 5. voicing gate + inhibitor
+                actions.append({"persona": pid, "action": "reflect", "thought": thought})
+        # 4. voicing gate + inhibitor
         actions += await self.consider(pid, at, persona)
         return actions
 
@@ -154,13 +140,14 @@ class Initiative:
                                            "ORDER BY id DESC LIMIT 20", pid):
             age_h = (at - t["created_at"]) / 3600
             score = float(t["score"])
-            if t["source"] in ("afterthought", "sudden") and age_h > 2:
+            if t["source"] in ("afterthought", "sudden", "dropped") and age_h > 2:
                 score *= 0.3  # "oh wait" is only natural soon after
             why = {"correction": "You need to correct something you told them: ",
                    "afterthought": "An afterthought on what you just talked about: ",
                    "deep": "Your workshop finished something for them: ",
                    "sudden": "",
-                   "wander": "A thought you had while they were away: ",
+                   "reflection": "",
+                   "recollection": "",
                    "dream": "A strange connection your mind made overnight: "}.get(t["source"], "A thought: ")
             out.append({"kind": "thought", "id": t["id"], "source": t["source"], "score": score,
                         "why": why + t["text"]})
@@ -236,44 +223,38 @@ class Initiative:
             log.warning("outreach check failed, holding message: %s", exc)
             return False
 
-    # ------------------------------------------------------------------ wander pass
-    async def wander(self, persona: dict) -> str | None:
+    # ------------------------------------------------------------------ reflection (B, between talks)
+    async def reflect(self, persona: dict, at: float | None = None) -> str | None:
+        """Once per conversation, after it has gone quiet: B looks back at what was said and searches the
+        longer past for what connects. Nothing random - if there is nothing new to think about, it doesn't."""
+        at = at or now()
         pid = persona["id"]
-        rows = await self.mind.store.all(
-            "SELECT id, text, quote, chord, salience FROM layers WHERE persona_id = ? AND status='active' "
-            "AND layer IN ('note','fact','reading') ORDER BY id DESC LIMIT 400", pid)
-        if len(rows) < 2:
+        if not persona["last_user_at"] or at - persona["last_user_at"] < 20 * 60:
+            return None  # still talking (or never talked)
+        last = await self.mind.store.one("SELECT MAX(created_at) AS t FROM thoughts WHERE persona_id = ? AND "
+                                         "source = 'reflection'", pid)
+        if last["t"] and last["t"] >= persona["last_user_at"]:
+            return None  # already reflected on this conversation
+        recent = await self.mind.store.all(
+            "SELECT id, user_text, reply_text FROM turns WHERE persona_id = ? AND kind = 'chat' AND started_at > ? "
+            "ORDER BY id DESC LIMIT 6", pid, persona["last_user_at"] - 6 * 3600)
+        if not recent:
             return None
-        mood = emotion.normalize(jload(persona.get("mood"), {}))
-        weights = []
-        for r in rows:
-            w = 0.3 + r["salience"] * 0.3
-            ch = jload(r["chord"], {})
-            if mood and ch:
-                w += 1.2 * emotion.resonance(mood, ch)  # mood-congruent drift
-            weights.append(w)
-        picks = {r["id"]: r for r in self.rng.choices(rows, weights=weights, k=min(5, len(rows)))}
-        listing = "\n".join(f"#{r['id']} {r['text']}" + (f' ("{r["quote"]}")' if r["quote"] else "")
-                            for r in picks.values())
-        loops = await self.mind.memory.open_loops(pid)
-        if loops:
-            listing += "\nStill open: " + "; ".join(lp["text"] for lp in loops[:5])
-        res = await self.mind.a.chat([{"role": "system", "content": WANDER},
-                                      {"role": "user", "content": f"Your mood: {emotion.render(mood)}\n{listing}"}],
-                                     temperature=1.0, max_tokens=300, json_mode=True)
-        data = extract_json(res.text) or {}
-        thought = str(data.get("thought", "")).strip()
-        if not thought:
-            return None
-        try:
-            worth = max(0.0, min(1.0, float(data.get("worth_saying", 0.3))))
-        except (TypeError, ValueError):
-            worth = 0.3
-        await self.mind.store.insert("thoughts", persona_id=pid, text=thought[:400], source="wander",
-                                     score=round(0.25 + 0.6 * worth, 3),
-                                     ref=",".join(str(i) for i in (data.get("about_ids") or [])[:6]),
-                                     created_at=now())
-        return thought
+        recent.reverse()
+        cue = "\n".join(f"{t['user_text']}\n{t['reply_text']}" for t in recent)
+        context = "What you talked about last:\n" + "\n".join(
+            f"PERSON: {t['user_text'][:400]}\nA: {t['reply_text'][:400]}" for t in recent)
+        cands = await self.mind.recall.candidates(persona, cue, limit=40, exclude_turn_ids={t["id"] for t in recent})
+        # mark the conversation as reflected on even if nothing connects, so this runs once
+        rec = await rememberer.remember(self.mind.b, self.mind.recall, persona, situation=REMEMBER_IDLE,
+                                        context=context, candidates=cands)
+        text = ("Thinking back on your last conversation, this came to mind:\n" + rec.text) if rec else ""
+        status = "pending" if rec else "decayed"
+        await self.mind.store.insert("thoughts", persona_id=pid, text=text or "(nothing connected)",
+                                     source="reflection", status=status,
+                                     score=0.65 if "open" in rec.kinds else 0.45,
+                                     ref=",".join(map(str, rec.event_ids)), created_at=now())
+        return text or None
 
     # ------------------------------------------------------------------ loop
     def start(self) -> None:

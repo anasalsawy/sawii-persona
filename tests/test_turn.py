@@ -38,7 +38,7 @@ class MindCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.settings = load_settings(data_dir=self.tmp.name, db_path=os.path.join(self.tmp.name, "m.db"),
-                                      intrusion_probability=0.0, background_enabled=False)
+                                      background_enabled=False)
         self.mind = self.build()
         self.pid, self.key = await create_persona(self.mind.store, name="Koko", definition="You are Koko, playful.",
                                                   user_name="Anas")

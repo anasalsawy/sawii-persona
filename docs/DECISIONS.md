@@ -44,8 +44,10 @@ older docs (`docs/origins/`), this file wins.
 | Emotion ↔ text both ways; the speaker lobe processes it | "when persona encounters similar emotions , text memory associated with it surfaces and ehn it encounters certain text memoty … emotiion memory surfces … the one whoprocesses … to bethe speaker lobe" | mood lane + chord carried on recall; A declares `⟦feel⟧` and its mood is the recall key |
 | Vague by design | "keep in mind this is a vague kind of memory by design matching embeddings" | loose recall band `SAWII_RECALL_BAND=0.30` |
 | Embeddings extensively, via Featherless LLM, to broaden context | "i want touse embedding extensively forthe purposeofcontext broadening tomakeA aware of all relevant info" · "4.an embeddingLLM from featherless" · "Qwen/Qwen3-Embedding-8B" | `embedder.py`, wide retrieve → rank → budget → labeled slice |
-| Human traits: spontaneous thoughts, intrusive recall, wit | "iwannamimick hhumanmemory ,iwant spontenous thoughts , insidoous recalls,randomwhitts" | wander, dream, intrusion lane |
-| **Remembering things all of a sudden** | "THE THING THAT MAKES IT BEHAVE LIKE HUMAN LIKE REMEMBERING THINGS ALL OF SUDDEN" | `memory/spontaneous.py`: priming, chains, pops, late recall |
+| Human traits: spontaneous thoughts, intrusive recall, wit | "iwannamimick hhumanmemory ,iwant spontenous thoughts , insidoous recalls,randomwhitts" | B's reflection between talks, dream (audited) |
+| **Remembering things all of a sudden** | "THE THING THAT MAKES IT BEHAVE LIKE HUMAN LIKE REMEMBERING THINGS ALL OF SUDDEN" | `brains/rememberer.py`: B remembers concurrently while A talks (see next row) |
+| **No tricks: a real multi-lobe function** | "I DONT WANT ARTIFICIAL TRICKS AND SIMULATIONS I WANTED A FUNCTION OF HAVINMG TWO OR MOREE LOBES IMPOSSIBLE TO DO WITH SINGLE LOBE A BENEFIT OF MULTI LOBES" | priming/activation/random intrusion/timers **removed**; B searches while A speaks and interrupts at a sentence end, or follows up after; B's judgement decides, embeddings only shortlist |
+| **20 multi-lobe functions** | "AND THINK OF OTHER FUNCTIONS AND FEATS OF HAVING TWO LOBES AND LIST THEM GIVE ME 20" → "YES TO ALL THAT CODE THEM" | README "What only a multi-lobe mind can do"; `brains/live.py`, `brains/rememberer.py`, sleep audits/mirror/calibration, `rules`, `tender`, `c_expect` |
 | One stream of thought without infinite context | "i want the agent to feel like its a one stream like one line of thought … snapshot then restore … problem of long context" | `context.py`: spine + self-narrative (rewritten at sleep) + loops + tail + recall |
 
 ## Life
@@ -68,5 +70,4 @@ older docs (`docs/origins/`), this file wins.
 * **Default models**: A = Qwen3.8-Flash-Next on Featherless (owner: "lets workwith nofine tune with the
   3,8 next … from featherless"); swap A to a Fireworks/Together model when fine-tuning starts.
 * **Two parallel peer reasoners** (THREE_BRAINS.md) stay parked; consultants cover "many minds at once".
-* Tuning numbers (recall band 0.30, intrusion 12%, activation half-life 90 min, pop threshold 1.0,
-  outreach cap 4/day, quiet hours 22:30-08:00, juice floor 0.55) are starting points, all env-tunable.
+* Tuning numbers (recall band 0.30, live checks per reply 3, outreach cap 4/day, quiet hours 22:30-08:00, juice floor 0.55) are starting points, all env-tunable.

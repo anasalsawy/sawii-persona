@@ -5,6 +5,7 @@ its declared chord becomes the key that pulls mood-congruent memories.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -35,6 +36,13 @@ A_TOOLS = [
         "parameters": {"type": "object", "properties": {
             "task": {"type": "string", "description": "What to do, fully specified."}},
             "required": ["task"]}}},
+    {"type": "function", "function": {
+        "name": "try_to_remember",
+        "description": "Something is on the tip of your tongue. Ask your adjutant, who holds the long memory of "
+                       "everything you two have said. Returns what it finds in the record, or that nothing comes back.",
+        "parameters": {"type": "object", "properties": {
+            "what": {"type": "string", "description": "What you are trying to remember."}},
+            "required": ["what"]}}},
 ]
 
 
@@ -85,38 +93,112 @@ def strip_feel(text: str) -> tuple[str, dict]:
 
 ToolExec = Callable[[ToolCall], Awaitable[str]]
 
+_ENDS = (".", "!", "?", "…", "\n")
+
+
+_BOUNDARY = re.compile(r"[.!?…][\"')\]*_»”’]*(?=\s|$)|\n")
+
+
+def at_boundary(text: str) -> bool:
+    """True when the visible text has just finished a sentence (closing quotes/brackets allowed)."""
+    t = text.rstrip(" \t").rstrip("\"')*_»”’")
+    return bool(t) and (t.endswith(_ENDS) or text.endswith("\n"))
+
+
+def first_boundary(piece: str) -> int:
+    """Index just after the first sentence end inside ``piece`` (-1 if none). Tokens often carry the end of
+    one sentence and the start of the next, so the cut can fall inside a piece."""
+    m = _BOUNDARY.search(piece)
+    return m.end() if m else -1
+
+
+def last_boundary(text: str) -> int:
+    ends = [m.end() for m in _BOUNDARY.finditer(text)]
+    return ends[-1] if ends else -1
+
+
+def inner_voice(items: list[dict]) -> str:
+    lines = ["[inner voice - not from the person; they cannot see this]"]
+    for it in items:
+        lines.append(it["text"])
+    lines.append("Carry on with the SAME reply from exactly where you stopped - no greeting, do not repeat what you "
+                 "already said, never mention this note. If it is a correction, make it out loud now. If it is a "
+                 "memory, use it the way someone who just remembered would, or just finish your thought.")
+    return "\n".join(lines)
+
 
 @dataclass
 class VoiceResult:
     text: str = ""
     chord: dict = field(default_factory=dict)
     tools_used: list[str] = field(default_factory=list)
+    heard: list[dict] = field(default_factory=list)   # inner-voice items A was interrupted with
 
 
 async def speak(llm: LLM, messages: list[dict], *, tools: list[dict] | None, run_tool: ToolExec,
                 result: VoiceResult, max_rounds: int = 4, model: str | None = None,
-                temperature: float = 0.8) -> AsyncIterator[str]:
-    """Stream A's answer, executing tool calls between rounds. Yields visible text."""
+                temperature: float = 0.8, inner: "asyncio.Queue | None" = None,
+                on_text: Callable[[str], None] | None = None, max_interruptions: int = 3) -> AsyncIterator[str]:
+    """Stream A's answer, executing tool calls between rounds. Yields visible text.
+
+    ``inner`` is the inner-voice queue the other lobes write into while A speaks. When it holds
+    something and A has just finished a sentence, A's stream is stopped there, A hears the note, and
+    continues the same reply. ``on_text`` sees the visible text so far after every piece."""
     msgs = list(messages)
     feel = FeelFilter()
-    for round_no in range(max_rounds):
+    tool_rounds = 0
+    interruptions = 0
+    while True:
         round_text = ""
+        said = ""        # what the person has actually seen this round
         calls: list[ToolCall] = []
-        use_tools = tools if round_no < max_rounds - 1 else None
+        interrupted = False
+        use_tools = tools if tool_rounds < max_rounds - 1 else None
         kwargs = {"tools": use_tools, "temperature": temperature, "max_tokens": 1500}
         if model:
             kwargs["model"] = model
-        async for ev in llm.stream(msgs, **kwargs):
-            if ev["type"] == "text":
-                round_text += ev["text"]
-                visible = feel.feed(ev["text"])
-                if visible:
-                    result.text += visible
-                    yield visible
-            elif ev["type"] == "tool_call":
-                calls.append(ev["call"])
+        stream = llm.stream(msgs, **kwargs)
+        try:
+            async for ev in stream:
+                if ev["type"] == "text":
+                    round_text += ev["text"]
+                    visible = feel.feed(ev["text"])
+                    can_stop = (inner is not None and not inner.empty() and interruptions < max_interruptions
+                                and not feel.hidden)
+                    if can_stop and visible:
+                        cut = 0 if at_boundary(result.text) and visible[:1].isspace() else first_boundary(visible)
+                        if cut != -1:
+                            visible, interrupted = visible[:cut], True
+                    if visible:
+                        result.text += visible
+                        said += visible
+                        yield visible
+                        if on_text is not None:
+                            on_text(result.text)
+                    if not interrupted and can_stop and at_boundary(result.text + feel.buf):
+                        interrupted = True
+                    if interrupted:
+                        break
+                elif ev["type"] == "tool_call":
+                    calls.append(ev["call"])
+        finally:
+            await stream.aclose()
+        if interrupted:
+            heard = []
+            while not inner.empty():
+                heard.append(inner.get_nowait())
+            interruptions += 1
+            result.heard += heard
+            msgs.append({"role": "assistant", "content": said})
+            msgs.append({"role": "user", "content": inner_voice(heard)})
+            if not result.text.endswith((" ", "\n")):
+                result.text += " "
+                yield " "
+            feel = FeelFilter()
+            continue
         if not calls:
             break
+        tool_rounds += 1
         tail = feel.flush()
         if tail:
             result.text += tail

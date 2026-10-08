@@ -91,15 +91,13 @@ class Settings:
     tail_turns: int = field(default_factory=lambda: _int("TAIL_TURNS", 8))
     recall_budget_chars: int = field(default_factory=lambda: _int("RECALL_BUDGET_CHARS", 3500))
     recall_band: float = field(default_factory=lambda: _float("RECALL_BAND", 0.30))  # loose = associative
-    intrusion_probability: float = field(default_factory=lambda: _float("INTRUSION_P", 0.12))
     unaddressed_days: float = field(default_factory=lambda: _float("UNADDRESSED_DAYS", 3.0))
-    activation_half_life_min: float = field(default_factory=lambda: _float("ACTIVATION_HALF_LIFE_MIN", 90.0))
-    sudden_delay_seconds: float = field(default_factory=lambda: _float("SUDDEN_DELAY_SECONDS", 6.0))
+    live_checks_max: int = field(default_factory=lambda: _int("LIVE_CHECKS_MAX", 3))  # B checks per reply, live
     psyche_half_life_days: float = field(default_factory=lambda: _float("PSYCHE_HALF_LIFE_DAYS", 21.0))
 
     # --- initiative ---------------------------------------------------------
     heartbeat_seconds: int = field(default_factory=lambda: _int("HEARTBEAT_SECONDS", 60))
-    wander_every_ticks: int = field(default_factory=lambda: _int("WANDER_EVERY_TICKS", 30))
+    reflect_every_ticks: int = field(default_factory=lambda: _int("REFLECT_EVERY_TICKS", 30))
     quiet_hours: str = field(default_factory=lambda: _env("QUIET_HOURS", "22:30-08:00"))
     daily_outreach_cap: int = field(default_factory=lambda: _int("DAILY_OUTREACH_CAP", 4))
     min_gap_between_outreach_minutes: int = field(default_factory=lambda: _int("OUTREACH_GAP_MIN", 90))

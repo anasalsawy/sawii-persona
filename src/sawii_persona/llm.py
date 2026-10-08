@@ -218,10 +218,11 @@ class ScriptedLLM(LLM):
     """Deterministic fake. ``responder(messages, opts)`` returns text or ChatResult."""
 
     def __init__(self, responder: Responder | str = "ok", *, name: str = "fake", delay: float = 0.0,
-                 chunk: int = 12):
+                 chunk: int = 12, chunk_delay: float = 0.0):
         self.responder = responder
         self.name = name
         self.delay = delay
+        self.chunk_delay = chunk_delay
         self.chunk = chunk
         self.calls: list[dict] = []
         self.model = name
@@ -243,6 +244,8 @@ class ScriptedLLM(LLM):
         result = await self.chat(messages, tools=tools)
         text = result.text
         for i in range(0, len(text), self.chunk):
+            if self.chunk_delay:
+                await asyncio.sleep(self.chunk_delay)
             yield {"type": "text", "text": text[i:i + self.chunk]}
         for call in result.tool_calls:
             yield {"type": "tool_call", "call": call}

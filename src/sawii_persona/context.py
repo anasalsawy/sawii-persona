@@ -32,12 +32,14 @@ class Scratch:
 
     conscience: str = ""
     correction: str = ""
-    sudden: str = ""          # a late recall that came back after the last answer
+    sudden: str = ""          # B found it after A had already answered ("oh wait...")
     c_brief: str = ""
+    dissent: str = ""         # C reads the person differently from B
+    dropped: list = field(default_factory=list)  # things they said that A did not answer
     last_consults: list = field(default_factory=list)
 
 
-def integrity_block(integ: dict) -> str:
+def integrity_block(integ: dict, calibration: str = "") -> str:
     if not integ.get("checked"):
         return ""
     lines = [f"Your verification record: {integ['green_streak']} clean answers in a row "
@@ -45,6 +47,8 @@ def integrity_block(integ: dict) -> str:
     for v in integ.get("recent", []):
         if v["level"] != "GREEN":
             lines.append(f"  - recently {v['level']}: {v['rationale'][:200]}")
+    if calibration:
+        lines.append("Where you tend to be wrong (be careful here): " + calibration)
     lines.append("Every answer is checked after you give it. Care about being right; never argue with the record.")
     return "\n".join(lines)
 
@@ -64,8 +68,8 @@ def loops_block(loops: list[dict], tz: str, at: float) -> str:
 
 
 def build_messages(*, persona: dict, clock: Clock, scratch: Scratch, integrity: dict, loops: list[dict],
-                   recall_text: str, tail: list[dict], user_text: str, at: float, pops: list[str] | None = None,
-                   on_mind: list[str] | None = None) -> list[dict]:
+                   recall_text: str, tail: list[dict], user_text: str, at: float,
+                   on_mind: list[str] | None = None, rules: list[dict] | None = None) -> list[dict]:
     tz = persona.get("timezone") or "UTC"
     stable = [A_BASE, "", persona_frame(persona.get("definition", ""), persona.get("name", ""))]
     if persona.get("user_name"):
@@ -79,32 +83,39 @@ def build_messages(*, persona: dict, clock: Clock, scratch: Scratch, integrity: 
         brief.append(f"CORRECTION REQUIRED (from your adjutant, with evidence): {scratch.correction}")
     if scratch.conscience:
         brief.append(f"Private note from your adjutant: {scratch.conscience}")
+    if rules:
+        brief.append("Their standing requests (keep them every time):\n" + "\n".join(f"  - {r['text']}" for r in rules))
+    if scratch.dropped:
+        brief.append("Last time they also said this and you never answered it - pick it up if it still matters:\n"
+                     + "\n".join(f'  - "{d}"' for d in scratch.dropped))
     lb = loops_block(loops, tz, at)
     if lb:
         brief.append(lb)
-    ib = integrity_block(integrity)
+    ib = integrity_block(integrity, persona.get("calibration", ""))
     if ib:
         brief.append(ib)
     if brief:
         live += ["", "=== your adjutant (B), privately ==="] + brief
     if persona.get("psych_profile"):
         live += ["", "=== your observer's (C) read of them - hunches, never labels ===", persona["psych_profile"]]
+    if scratch.dissent:
+        live += ["", "=== your two inner minds disagree ===",
+                 f"Your adjutant (B) and your observer (C) read this differently. C: {scratch.dissent}",
+                 "If it matters, you may say you are of two minds - honestly, in your own words."]
+    if persona.get("habits"):
+        live += ["", "=== habits your observer (C) sees in you that you cannot see yourself ===", persona["habits"]]
     mood = jload(persona.get("mood"), {})
     if mood:
         live += ["", f"How you have been feeling: {emotion.render(mood)}."]
     user_mood = jload(persona.get("user_mood"), {})
     if user_mood:
         live += [f"How they have seemed lately: {emotion.render(user_mood)}."]
-    sudden = list(pops or [])
     if scratch.sudden:
-        sudden.insert(0, scratch.sudden)
-    if sudden:
-        live += ["", "=== just came back to you, out of nowhere ===",
-                 "Nobody asked; it simply surfaced in your mind. If it fits, you may say so the way people do "
-                 "(\"oh - that reminds me...\", \"wait, I just remembered...\"); if it does not fit, keep it.",
-                 *sudden]
+        live += ["", "=== came back to you right after you last answered ===",
+                 "Your adjutant found this after you had finished talking. If you have not mentioned it yet, you may "
+                 "(\"oh - I meant to say...\"); if it no longer fits, let it go.", scratch.sudden]
     if on_mind:
-        live += ["", "=== on your mind lately (your own thoughts while they were away) ===",
+        live += ["", "=== on your mind (what your other minds kept thinking about after you last talked) ===",
                  "Bring one up only at a natural moment, never forced:", *[f"• {t}" for t in on_mind]]
     if recall_text:
         live += ["", "=== memories ===", recall_text]

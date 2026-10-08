@@ -5,8 +5,12 @@
     │ C's profile, recall slice, tail, clock  │── in parallel the moment the
     └───────────────┬────────────────────────┘   message lands
                     ▼
-            A speaks (streams)  ── fetch_consults / check_clock / delegate_task
-                    ▼
+            A speaks (streams)  ── fetch_consults / check_clock / delegate_task / try_to_remember
+                    ▲   at each sentence end A may hear its inner voice:
+                    │     B remembering (searching the past while A talks)
+                    │     B live-checking A's finished sentences
+                    │     C's gut read of the message (tone, surprise)
+                    ▼   a memory B finds after A finished → "oh wait" follow-up
      person has the answer  ── nothing below blocks them
                     ▼
     B reviews (verdict → A's integrity record, collateral, loops,
@@ -15,7 +19,7 @@
     C observes B + the exchange (notes, readings, chord, hypotheses,
                entities, reinterpretations, brief for B next turn)
                     ▼
-    A writes the fact layer · juice filter · mood drift
+    A writes the fact layer · B looks back wider (kept for next time) · juice · mood drift
 
 The wheel: C briefs B, B briefs A, A's turn feeds C. Advice flows down the
 chain; authorship stays flat - each lobe writes only its own layer.
@@ -29,9 +33,9 @@ import time
 from typing import AsyncIterator
 
 from . import emotion
-from .brains import adjutant, observer
+from .brains import adjutant, live, observer, rememberer
 from .brains.consults import ConsultBoard
-from .brains.prompts import A_DIARY
+from .brains.prompts import A_DIARY, REMEMBER_DEEP, REMEMBER_LIVE, TRY_TO_REMEMBER
 from .brains.voice_a import A_TOOLS, VoiceResult, speak
 from .config import ModelEndpoint, Settings
 from .context import Scratch, build_messages
@@ -40,7 +44,6 @@ from .identity import get_persona
 from .life.subconscious import Subconscious
 from .llm import LLM, OpenAICompatLLM, ToolCall, extract_json
 from .memory.recall import Recall
-from .memory.spontaneous import Spontaneous, render_pop
 from .timesense import local_dt
 from .memory.records import Memory
 from .store import Store, jdump, jload, now
@@ -93,10 +96,7 @@ class Mind:
                 for m in settings.consult_models}
         self.memory = Memory(self.store, self.embedder)
         self.recall = Recall(self.store, self.memory, self.embedder, band=settings.recall_band,
-                             intrusion_p=settings.intrusion_probability, unaddressed_days=settings.unaddressed_days,
-                             half_life_days=settings.psyche_half_life_days)
-        self.spontaneous = Spontaneous(self.store, self.embedder, half_life_min=settings.activation_half_life_min,
-                                       band=settings.recall_band)
+                             unaddressed_days=settings.unaddressed_days, half_life_days=settings.psyche_half_life_days)
         self.subconscious = Subconscious(self.store, self.embedder, floor=settings.juice_floor,
                                          buffer_rows=settings.buffer_rows, bowl_ratio=settings.bowl_ratio)
         self.bus = Bus()
@@ -163,24 +163,27 @@ class Mind:
                 if done_jobs:
                     recall_text += "\n\nYour workshop finished (tell them if it matters):\n" + "\n".join(
                         f"• job {j['id']}: {j['task'][:160]} -> {j['result'][:1200]}" for j in done_jobs)
-            # memories that were primed earlier and now pop up unbidden
-            fmt = lambda ts: local_dt(ts, persona["timezone"]).strftime("%d %b")  # noqa: E731
-            popped = await self.spontaneous.pops(persona, limit=1, at=started)
-            pops_text = [render_pop(r, fmt) for r in popped]
-            # thoughts it had while they were away (wander / dream), offered once
+            # what the other minds kept thinking about since the last talk (offered once)
             mind_rows = await self.store.all(
                 "SELECT id, text FROM thoughts WHERE persona_id = ? AND status = 'pending' AND source IN "
-                "('wander','dream') ORDER BY score DESC, id DESC LIMIT 2", pid)
+                "('reflection','recollection','dream') ORDER BY score DESC, id DESC LIMIT 2", pid)
             for r in mind_rows:
                 await self.store.update("thoughts", r["id"], status="offered")
             last_chat = next((t for t in reversed(tail_rows) if t["kind"] == "chat" and t["ended_at"]), None)
             if last_chat:
                 clock.last_exchange_seconds = max(0.0, last_chat["ended_at"] - last_chat["started_at"])
+            rules = await self.memory.rules(pid)
             messages = build_messages(persona=persona, clock=clock, scratch=scratch, integrity=integ, loops=loops,
                                       recall_text=recall_text, tail=tail_rows, user_text=user_text, at=started,
-                                      pops=pops_text, on_mind=[r["text"] for r in mind_rows])
+                                      on_mind=[r["text"] for r in mind_rows], rules=rules)
             scratch.sudden = ""
-            surfaced_ids = [*recall_res.layer_ids, *[r["id"] for r in popped]]
+            scratch.dropped = []
+            scratch.dissent = ""
+
+            # ---- the other lobes start now, while A speaks
+            inner: asyncio.Queue = asyncio.Queue()
+            live_lobes = _LiveLobes(self, persona, turn_id, user_text, tail_rows, recall_res, recall_text, rules, inner)
+            live_lobes.start()
 
             async def run_tool(call: ToolCall) -> str:
                 yield_tool.append(call.name)
@@ -197,6 +200,13 @@ class Mind:
                         return json.dumps({"error": "workshop not available"})
                     job = await self.deep.submit(pid, task)
                     return json.dumps({"job": job, "status": "started - results will come back to you later"})
+                if call.name == "try_to_remember":
+                    what = str(call.args().get("what", "")).strip()
+                    if not what:
+                        return "Remember what?"
+                    rec = await self.try_to_remember(persona, what, exclude_turn_ids={turn_id})
+                    live_lobes.surfaced(rec)
+                    return rec.text or "Nothing comes back - your adjutant finds nothing in the record about that."
                 return json.dumps({"error": f"unknown tool {call.name}"})
 
             yield_tool: list[str] = []
@@ -206,10 +216,16 @@ class Mind:
             result = VoiceResult()
             failed = False
             try:
+                heard = 0
                 async for piece in speak(self.a, messages, tools=offered if use_tools else None, run_tool=run_tool,
-                                         result=result, model=self.a_model_for(persona)):
+                                         result=result, model=self.a_model_for(persona), inner=inner,
+                                         on_text=live_lobes.on_text):
                     while yield_tool:
                         yield {"type": "tool", "name": yield_tool.pop(0)}
+                    while heard < len(result.heard):
+                        yield {"type": "inner", "from": result.heard[heard]["from"],
+                               "kind": result.heard[heard]["kind"]}
+                        heard += 1
                     yield {"type": "delta", "text": piece}
             except Exception as exc:  # noqa: BLE001
                 log.exception("A failed")
@@ -220,6 +236,7 @@ class Mind:
                     yield {"type": "delta", "text": fallback}
                 yield {"type": "error", "detail": str(exc)[:200]}
             reply = result.text
+            live_lobes.finish(result.heard, failed)
             await self.memory.finish_turn(turn_id, reply)
             await self.store.update("personas", pid, last_reply_at=now())
             if scratch.correction and not failed:
@@ -227,9 +244,10 @@ class Mind:
             scratch.conscience = ""
 
             post = self.spawn(self._post_turn(persona, turn_id, user_text, reply, tail_rows, recall_res, board,
-                                              result.chord, surface, failed, surfaced_ids), name=f"post-{turn_id}")
+                                              result.chord, surface, failed, live_lobes), name=f"post-{turn_id}")
             done = {"type": "done", "turn_id": turn_id, "text": reply, "chord": result.chord,
-                    "tools": result.tools_used, "spent_seconds": round(clock.spent, 2)}
+                    "tools": result.tools_used, "spent_seconds": round(clock.spent, 2),
+                    "inner": [{"from": h["from"], "kind": h["kind"]} for h in result.heard]}
             if self.s.show_verdict_to_user and not failed:
                 try:
                     verdict = await asyncio.wait_for(asyncio.shield(post), timeout=60)
@@ -249,7 +267,7 @@ class Mind:
 
     # ------------------------------------------------------------- after the turn
     async def _post_turn(self, persona, turn_id, user_text, reply, tail, recall_res, board, a_chord, surface,
-                         failed, surfaced_ids=None) -> dict | None:
+                         failed, live_lobes: "_LiveLobes | None" = None) -> dict | None:
         pid = persona["id"]
         lock = self._post_locks.setdefault(pid, asyncio.Lock())
         async with lock:
@@ -270,7 +288,8 @@ class Mind:
                 try:
                     b_rev = await adjutant.review(self.b, persona=persona, user_text=user_text, reply=reply, tail=tail,
                                                   recall_text=recall_res.text, consults=consults, loops=loops,
-                                                  c_brief=scratch.c_brief, at=now())
+                                                  c_brief=scratch.c_brief, at=now(), a_chord=a_chord,
+                                                  rules=await self.memory.rules(pid))
                 except Exception as exc:  # noqa: BLE001
                     log.warning("B review failed: %s", exc)
             if b_rev:
@@ -281,6 +300,12 @@ class Mind:
                                    "findings": b_rev["findings"]}
                     await self._revisit(pid, event_id, turn_id, user_text, b_rev, sources)
                 scratch.conscience = b_rev["conscience"]
+                if b_rev["regulate"]:  # A's own feeling is running hot: B steadies it before the next reply
+                    scratch.conscience = (scratch.conscience + " " + b_rev["regulate"]).strip()
+                await self.memory.apply_rules(pid, b_rev["rules"], [user_text, *sources])
+                from .memory.grounding import ground
+                scratch.dropped = [q for q in (ground(str(d.get("quote", "")), [user_text])
+                                               for d in b_rev["dropped"]) if q][:3]
                 if b_rev["correction"] and b_rev["level"] in ("RED", "YELLOW"):
                     scratch.correction = b_rev["correction"]
                     await self.store.insert("thoughts", persona_id=pid, text=b_rev["correction"], source="correction",
@@ -333,6 +358,8 @@ class Mind:
                     if lid in allowed:
                         await self.memory.reinterpret(pid, lid, str(ri.get("reading", "")))
                 scratch.c_brief = c_obs["brief_for_b"]
+                scratch.dissent = c_obs["disagree_with_b"] if b_rev else ""
+                await self.store.update("personas", pid, c_expect=c_obs["expect"])
                 fresh = await get_persona(self.store, pid)
                 user_mood = emotion.blend(jload(fresh["user_mood"], {}), chord, 0.4) if chord else jload(
                     fresh["user_mood"], {})
@@ -353,29 +380,14 @@ class Mind:
 
             await self.memory.mark_recalled(pid, recall_res.layer_ids)
 
-            # ---- spontaneous recall: prime near-misses + chains, then the slow late search
+            # ---- B's slower, wider look back now that A has answered (kept for next time)
             if not failed:
                 try:
-                    fresh = await get_persona(self.store, pid)
-                    cue = f"{user_text}\n{reply}"
-                    await self.spontaneous.prime(fresh, cue, surfaced=surfaced_ids or recall_res.layer_ids,
-                                                 mood=_blend_moods(fresh))
-                    late = await self.spontaneous.late_recall(fresh, cue, already=surfaced_ids or recall_res.layer_ids,
-                                                              current_turn=turn_id)
-                    if late:
-                        when = local_dt(late["created_at"], fresh["timezone"]).strftime("%d %b")
-                        said = f' - they said: "{late["quote"]}"' if late["quote"] else ""
-                        memory_line = f"{late['text']}{said} (from {when})"
-                        scratch.sudden = "• " + memory_line
-                        await self.store.insert("thoughts", persona_id=pid, source="sudden", score=0.8,
-                                                text=f"It suddenly came back to you, right after you answered: "
-                                                     f"{memory_line}. Say it like 'oh wait, I just remembered' if it "
-                                                     f"adds something to what you were just talking about.",
-                                                ref=str(late["id"]), created_at=now())
-                        if self.outbox is not None:
-                            self.spawn(self._delayed_consider(pid), name=f"sudden-{turn_id}")
+                    await self._deep_recollection(persona, turn_id, user_text, reply, tail,
+                                                  surfaced=set(live_lobes.surfaced_layer_ids if live_lobes
+                                                               else recall_res.layer_ids))
                 except Exception as exc:  # noqa: BLE001
-                    log.warning("spontaneous recall failed: %s", exc)
+                    log.warning("deep recollection failed: %s", exc)
 
             # ---- subconscious: keep the raw juice
             if not failed:
@@ -388,9 +400,40 @@ class Mind:
             self.bus.publish(pid, {"type": "memory_updated", "turn_id": turn_id})
             return verdict_out
 
-    async def _delayed_consider(self, pid: int) -> None:
-        await asyncio.sleep(self.s.sudden_delay_seconds)
-        await self.outbox.consider(pid)
+    # ------------------------------------------------------------- remembering (B)
+    async def try_to_remember(self, persona: dict, what: str, *, exclude_turn_ids: set | None = None):
+        """A asks B: tip of the tongue."""
+        cands = await self.recall.candidates(persona, what, limit=30, exclude_turn_ids=exclude_turn_ids)
+        return await rememberer.remember(self.b, self.recall, persona, situation=TRY_TO_REMEMBER.format(what=what),
+                                         context=f"A is trying to remember: {what}", candidates=cands, limit=2)
+
+    async def _late_recall(self, pid: int, turn_id: int, rec) -> None:
+        """B found it after A had finished talking: the honest 'oh wait, I just remembered'."""
+        if not rec:
+            return
+        self.scratch_for(pid).sudden = rec.text
+        await self.memory.mark_recalled(pid, rec.layer_ids)
+        await self.store.insert("thoughts", persona_id=pid, source="sudden", score=0.8,
+                                text="It came back to you right after you answered:\n" + rec.text +
+                                     "\nSay it like 'oh wait, I just remembered' if it adds something to what you "
+                                     "were just talking about.",
+                                ref=",".join(map(str, rec.event_ids)), created_at=now())
+        self.bus.publish(pid, {"type": "inner", "from": "B", "kind": "late_memory", "turn_id": turn_id})
+        if self.outbox is not None:
+            await self.outbox.consider(pid)
+
+    async def _deep_recollection(self, persona, turn_id, user_text, reply, tail, *, surfaced: set) -> None:
+        pid = persona["id"]
+        cands = await self.recall.candidates(persona, f"{user_text}\n{reply}", exclude_ids=surfaced, limit=50,
+                                             exclude_turn_ids={turn_id}, mood=_blend_moods(persona))
+        rec = await rememberer.remember(self.b, self.recall, persona, situation=REMEMBER_DEEP,
+                                        context=rememberer.context_for(user_text, tail, reply), candidates=cands)
+        if not rec:
+            return
+        score = 0.65 if "open" in rec.kinds else 0.5
+        await self.store.insert("thoughts", persona_id=pid, source="recollection", score=score,
+                                text="Thinking back after you last talked, this came to mind:\n" + rec.text,
+                                ref=",".join(map(str, rec.event_ids)), created_at=now())
 
     async def _revisit(self, pid, event_id, turn_id, user_text, b_rev, sources) -> None:
         """Revisit-and-revise: the companion changes its mind out loud.
@@ -439,6 +482,117 @@ class Mind:
             closer = getattr(llm, "aclose", None)
             if closer:
                 await closer()
+
+
+class _LiveLobes:
+    """B and C working while A speaks. Everything they find goes to A's inner-voice queue."""
+
+    def __init__(self, mind: "Mind", persona, turn_id, user_text, tail, recall_res, recall_text, rules, inner):
+        self.m, self.persona, self.turn_id = mind, persona, turn_id
+        self.user_text, self.tail, self.recall_text, self.rules = user_text, tail, recall_text, rules
+        self.recall_res = recall_res
+        self.inner: asyncio.Queue = inner
+        self.surfaced_layer_ids: list[int] = list(recall_res.layer_ids)
+        self.tasks: list[asyncio.Task] = []
+        self.memory_task: asyncio.Task | None = None
+        self.check_task: asyncio.Task | None = None
+        self.checks = 0
+        self.checked_len = 0
+        self.closed = False
+
+    def _put(self, item: dict) -> None:
+        if not self.closed:
+            self.inner.put_nowait(item)
+
+    def start(self) -> None:
+        self.memory_task = asyncio.create_task(self._remember(), name=f"remember-{self.turn_id}")
+        self.tasks += [self.memory_task, asyncio.create_task(self._gut(), name=f"gut-{self.turn_id}")]
+
+    async def _remember(self):
+        try:
+            cands = await self.m.recall.candidates(self.persona, self.user_text,
+                                                   exclude_ids=set(self.recall_res.layer_ids), limit=24,
+                                                   exclude_turn_ids={self.turn_id}, mood=_blend_moods(self.persona))
+            rec = await rememberer.remember(self.m.b, self.m.recall, self.persona, situation=REMEMBER_LIVE,
+                                            context=rememberer.context_for(self.user_text, self.tail),
+                                            candidates=cands)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("live remembering failed: %s", exc)
+            return None
+        if rec:
+            self._put({"from": "B", "kind": "memory", "rec": rec,
+                       "text": "Something just came back to you (from your adjutant, who was searching while "
+                               "you talked):\n" + rec.text})
+        return rec
+
+    async def _gut(self) -> None:
+        try:
+            read = await live.gut_read(self.m.c, user_text=self.user_text, tail=self.tail,
+                                       expect=self.persona.get("c_expect", ""),
+                                       user_mood=emotion.render(jload(self.persona.get("user_mood"), {})))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("gut read failed: %s", exc)
+            return
+        if read["tone"]:
+            self._put({"from": "C", "kind": "tone", "text": f"How they seem right now: {read['tone']}"})
+        if read["surprise"]:
+            self._put({"from": "C", "kind": "surprise", "text": f"Not what you expected from them: {read['surprise']}"})
+
+    def on_text(self, text: str) -> None:
+        """Called as A speaks: hand each new finished stretch to B for a live check."""
+        from .brains.voice_a import last_boundary
+        if self.closed or self.checks >= self.m.s.live_checks_max:
+            return
+        if self.check_task is not None and not self.check_task.done():
+            return
+        end = last_boundary(text)  # only finished sentences are judged
+        if end == -1 or end - self.checked_len < 80:
+            return
+        self.checked_len = end
+        self.checks += 1
+        self.check_task = asyncio.create_task(self._check(text[:end]), name=f"check-{self.turn_id}")
+        self.tasks.append(self.check_task)
+
+    async def _check(self, partial: str) -> None:
+        try:
+            note = await live.live_check(self.m.b, user_text=self.user_text, partial=partial,
+                                         recall_text=self.recall_text, rules=self.rules)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("live check failed: %s", exc)
+            return
+        if note:
+            self._put({"from": "B", "kind": "correction", "text": f"Your adjutant stops you: {note}"})
+
+    def surfaced(self, rec) -> None:
+        if rec:
+            self.surfaced_layer_ids += rec.layer_ids
+
+    def finish(self, heard: list[dict], failed: bool) -> None:
+        """A stopped talking. Anything still being thought about the reply itself is moot;
+        a memory B is still looking for becomes an 'oh wait' if B finds it."""
+        self.closed = True
+        delivered = False
+        for h in heard:
+            if h.get("rec"):
+                delivered = True
+                self.surfaced(h["rec"])
+                self.m.spawn(self.m.memory.mark_recalled(self.persona["id"], h["rec"].layer_ids))
+        for t in self.tasks:
+            if t is not self.memory_task and not t.done():
+                t.cancel()
+        mt = self.memory_task
+        if mt is None or delivered:
+            return
+        if failed:
+            mt.cancel()
+            return
+        self.m.spawn(self._late(mt), name=f"late-{self.turn_id}")
+
+    async def _late(self, task: asyncio.Task) -> None:
+        rec = await task
+        if rec:
+            self.surfaced(rec)
+            await self.m._late_recall(self.persona["id"], self.turn_id, rec)
 
 
 def _blend_moods(persona: dict) -> dict:

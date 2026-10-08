@@ -45,5 +45,7 @@ async def observe(llm: LLM, *, persona: dict, user_text: str, reply: str, tail: 
         "entities": lst("entities", 6),
         "reinterpret": lst("reinterpret", 4),
         "brief_for_b": str(data.get("brief_for_b", "") or "").strip()[:800],
+        "expect": str(data.get("expect", "") or "").strip()[:300],
+        "disagree_with_b": str(data.get("disagree_with_b", "") or "").strip()[:400],
         "parsed": bool(data),
     }

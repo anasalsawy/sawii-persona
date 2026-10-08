@@ -1,4 +1,3 @@
-import random
 import time
 
 from helpers import StoreCase
@@ -119,7 +118,7 @@ class RecallTests(StoreCase):
         await self._note("my sister Maya has her exam on friday", "Maya's exam Friday",
                          "my sister Maya has her exam on friday")
         await self._note("I bought a red bicycle", "bought red bicycle", "I bought a red bicycle")
-        rec = Recall(self.store, self.memory, self.embedder, intrusion_p=0, rng=random.Random(1))
+        rec = Recall(self.store, self.memory, self.embedder)
         res = await rec.recall(self.persona, "how did Maya's exam go?")
         self.assertIn("Maya", res.text)
         self.assertIn("[fact·A]", res.text)
@@ -130,7 +129,7 @@ class RecallTests(StoreCase):
         grief = {"sadness": 0.8, "tenderness": 0.5}
         await self._note("I still miss grandpa's garden", "misses grandpa's garden",
                          "I still miss grandpa's garden", chord=grief, sal=3)
-        rec = Recall(self.store, self.memory, self.embedder, intrusion_p=0)
+        rec = Recall(self.store, self.memory, self.embedder)
         res = await rec.recall(self.persona, "random unrelated words xyz", mood={"sadness": 0.7, "tenderness": 0.4})
         self.assertIn("grandpa", res.text)
         self.assertIn("feels like now", res.text)
@@ -138,7 +137,7 @@ class RecallTests(StoreCase):
     async def test_unaddressed_queue(self):
         ids = await self._note("btw my knee has been hurting", "knee hurts", "my knee has been hurting", kind="aside")
         await self.store.run("UPDATE layers SET created_at = ?", time.time() - 5 * 86400)
-        rec = Recall(self.store, self.memory, self.embedder, intrusion_p=0)
+        rec = Recall(self.store, self.memory, self.embedder)
         res = await rec.recall(self.persona, "what should I cook tonight")
         self.assertIn("knee", res.text)
         self.assertIn("nobody ever followed up", res.text)

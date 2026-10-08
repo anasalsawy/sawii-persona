@@ -21,7 +21,7 @@ class ApiTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.settings = load_settings(data_dir=self.tmp.name, db_path=os.path.join(self.tmp.name, "a.db"),
                                       admin_token="admin-secret", background_enabled=False,
-                                      intrusion_probability=0.0, telegram_secret="tg", email_inbound_secret="em")
+                                      telegram_secret="tg", email_inbound_secret="em")
         mind = Mind(self.settings, llms={"a": make_a(), "b": make_b(), "c": make_c(), "embed": None,
                                          "consultants": {}})
         self.rt = Runtime(self.settings, mind=mind)

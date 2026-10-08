@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS personas (
     last_user_at  REAL NOT NULL DEFAULT 0,
     last_reply_at REAL NOT NULL DEFAULT 0,
     last_sleep_at REAL NOT NULL DEFAULT 0,
+    c_expect      TEXT NOT NULL DEFAULT '',       -- C's prediction of what they'll say/feel next
+    habits        TEXT NOT NULL DEFAULT '',       -- C's mirror: A's own habits and ruts (sleep)
+    calibration   TEXT NOT NULL DEFAULT '',       -- B's map of where A tends to be wrong (sleep)
     created_at    REAL NOT NULL
 );
 
@@ -92,9 +95,7 @@ CREATE TABLE IF NOT EXISTS layers (
     hvec        BLOB,                            -- local hash vector, always present
     recalled_count INTEGER NOT NULL DEFAULT 0,
     last_recalled_at REAL NOT NULL DEFAULT 0,
-    activation  REAL NOT NULL DEFAULT 0,          -- priming: half-touched by cues, fades, may pop
-    activated_at REAL NOT NULL DEFAULT 0,
-    popped_at   REAL NOT NULL DEFAULT 0,
+    tender      INTEGER NOT NULL DEFAULT 0,      -- C: painful; held back unless the person raises it
     created_at  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_layers_p ON layers(persona_id, status, id);
@@ -145,6 +146,17 @@ CREATE TABLE IF NOT EXISTS loops (
     updated_at  REAL NOT NULL
 );
 
+-- Standing requests the person made about how to be talked to ("keep it short").
+-- B keeps them and checks A against them while A is still speaking.
+CREATE TABLE IF NOT EXISTS rules (
+    id          INTEGER PRIMARY KEY,
+    persona_id  INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+    text        TEXT NOT NULL,
+    quote       TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'active',  -- active | dropped
+    created_at  REAL NOT NULL
+);
+
 -- B's verdicts: the integrity record A sees next turn.
 CREATE TABLE IF NOT EXISTS verdicts (
     id          INTEGER PRIMARY KEY,
@@ -162,7 +174,7 @@ CREATE TABLE IF NOT EXISTS thoughts (
     id          INTEGER PRIMARY KEY,
     persona_id  INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
     text        TEXT NOT NULL,
-    source      TEXT NOT NULL DEFAULT 'wander', -- wander|dream|consult|loop|afterthought|correction
+    source      TEXT NOT NULL DEFAULT 'reflection', -- reflection|recollection|sudden|dream|afterthought|correction|dropped|deep
     score       REAL NOT NULL DEFAULT 0.0,
     status      TEXT NOT NULL DEFAULT 'pending',-- pending|voiced|inhibited|decayed
     ref         TEXT NOT NULL DEFAULT '',
@@ -233,9 +245,10 @@ CREATE TABLE IF NOT EXISTS deep_jobs (
 
 # additive migrations for databases created by earlier versions
 MIGRATIONS = [
-    ("layers", "activation", "REAL NOT NULL DEFAULT 0"),
-    ("layers", "activated_at", "REAL NOT NULL DEFAULT 0"),
-    ("layers", "popped_at", "REAL NOT NULL DEFAULT 0"),
+    ("layers", "tender", "INTEGER NOT NULL DEFAULT 0"),
+    ("personas", "c_expect", "TEXT NOT NULL DEFAULT ''"),
+    ("personas", "habits", "TEXT NOT NULL DEFAULT ''"),
+    ("personas", "calibration", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
