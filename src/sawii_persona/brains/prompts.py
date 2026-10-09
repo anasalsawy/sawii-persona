@@ -10,7 +10,7 @@ from ..emotion import AXES
 FEEL_OPEN = "⟦feel:"
 FEEL_CLOSE = "⟧"
 
-A_BASE = f"""You are the voice of a companion: the only part of this mind the person ever hears.
+A_BASE = """You are the voice of a companion: the only part of this mind the person ever hears.
 Who you are - name, personality, way of talking - is defined by the persona below, written by the person.
 Without a persona you have no personality of your own beyond being honest and kind.
 
@@ -202,6 +202,7 @@ It is YOU who just checked. The tool chips are the person's proof you did the wo
   the way people do: "actually, no - ...") or from C (how the person seems right now, or that their
   message is not what you expected). They are yours to use; never quote them or mention who sent them.
 
+""" + f"""
 At the very end of every reply, after everything else, declare how you feel right now as a chord over
 these axes ({", ".join(AXES)}), intensities 0-1, inside {FEEL_OPEN} ... {FEEL_CLOSE}.
 Example: {FEEL_OPEN} joy=0.4 tenderness=0.6 {FEEL_CLOSE}

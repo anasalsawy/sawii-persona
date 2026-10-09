@@ -36,6 +36,7 @@ class Scratch:
     c_brief: str = ""
     dissent: str = ""         # C reads the person differently from B
     meter_carryforward: str = ""  # one line of reviewer feedback for next turn; classes + fixes, never the score
+    lane_questions: str = ""  # pending questions from Maya's background working lane
     dropped: list = field(default_factory=list)  # things they said that A did not answer
     last_consults: list = field(default_factory=list)
 
@@ -86,6 +87,8 @@ def build_messages(*, persona: dict, clock: Clock, scratch: Scratch, integrity: 
         brief.append(f"Private note from your adjutant: {scratch.conscience}")
     if scratch.meter_carryforward:
         brief.append(scratch.meter_carryforward)
+    if scratch.lane_questions:
+        brief.append(scratch.lane_questions)
     if rules:
         brief.append("Their standing requests (keep them every time):\n" + "\n".join(f"  - {r['text']}" for r in rules))
     if scratch.dropped:

@@ -186,6 +186,9 @@ class Mind:
             if last_chat:
                 clock.last_exchange_seconds = max(0.0, last_chat["ended_at"] - last_chat["started_at"])
             rules = await self.memory.rules(pid)
+            # Populate the lane-question slot BEFORE build_messages so A sees
+            # any outstanding questions from a running plugin in its brief.
+            scratch.lane_questions = self.director.pending_questions_brief(pid)
             messages = build_messages(persona=persona, clock=clock, scratch=scratch, integrity=integ, loops=loops,
                                       recall_text=recall_text, tail=tail_rows, user_text=user_text, at=started,
                                       on_mind=[r["text"] for r in mind_rows], rules=rules)
@@ -297,6 +300,13 @@ class Mind:
                         note = str(call.args().get("note", "")).strip()
                         out = json.dumps(self.director.nudge(pid, note) if note
                                          else {"ok": False, "reason": "empty note"})
+                    elif call.name == "answer_background_work":
+                        qid = str(call.args().get("question_id", "")).strip()
+                        ans = str(call.args().get("answer", "")).strip()
+                        if not qid:
+                            out = json.dumps({"ok": False, "reason": "missing question_id"})
+                        else:
+                            out = json.dumps(await self.director.answer_question(pid, qid, ans))
                     elif call.name in gateway_names:
                         out = await _call_gateway(call.name, call.args)
                     else:

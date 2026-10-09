@@ -457,6 +457,33 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
             mind.spawn(_inbound(persona, str(msg["text"]), "telegram"), name="inbound-telegram")
         return JSONResponse({"ok": True})
 
+    async def lane_question(request: Request):
+        """A plugin on the gateway, mid-run, is asking A something. Routed to
+        this user's Director, which stashes it in pending_questions and either
+        pushes to A's inner_voice (if a turn is live) or surfaces in the brief
+        on A's next turn."""
+        secret = os.environ.get("GATEWAY_INTERNAL_SECRET", "").strip()
+        if not secret or not hmac.compare_digest(
+                request.headers.get("x-internal-secret", "") or "", secret):
+            return _err(401, "bad secret")
+        try:
+            data = await body_json(request)
+        except Exception:  # noqa: BLE001
+            return _err(400, "bad body")
+        key = str(data.get("persona_key") or "").strip()
+        if not key:
+            return _err(400, "missing persona_key")
+        persona = await identity.persona_by_key(mind.store, key)
+        if persona is None:
+            return _err(404, "unknown persona")
+        mind.director.deliver_question(persona["id"], {
+            "question_id": str(data.get("question_id") or ""),
+            "tool_call_id": str(data.get("tool_call_id") or ""),
+            "question": str(data.get("question") or ""),
+            "default_if_quiet": str(data.get("default_if_quiet") or ""),
+        })
+        return JSONResponse({"ok": True})
+
     async def hook_email(request: Request):
         if not settings.email_inbound_secret or not hmac.compare_digest(
                 request.query_params.get("secret", ""), settings.email_inbound_secret):
@@ -502,6 +529,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         Route("/hooks/twilio", hook_twilio, methods=["POST"]),
         Route("/hooks/telegram", hook_telegram, methods=["POST"]),
         Route("/hooks/email", hook_email, methods=["POST"]),
+        Route("/v1/lane/questions", lane_question, methods=["POST"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.runtime = rt

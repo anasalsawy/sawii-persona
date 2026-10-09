@@ -90,6 +90,10 @@ class _State:
     history: list[_Directive] = field(default_factory=list)
     cancel_requested: bool = False
     active_tool_call_id: str = ""     # set while a tool is running on the gateway
+    # Questions a running plugin asked the voice. Each: {question_id, question,
+    # tool_call_id, asked_at, default_if_quiet, answered}. A reads them in its
+    # next-turn brief when A was asleep; mid-turn ones also go into inner_voice.
+    pending_questions: list = field(default_factory=list)
 
 
 class Director:
@@ -188,6 +192,93 @@ class Director:
             state.queue._queue[-1].pending_notes.append(note)  # type: ignore[attr-defined]
             return {"ok": True, "attached_to_queued": True}
         return {"ok": False, "reason": "nothing is working right now"}
+
+    def deliver_question(self, pid: int, question: dict) -> None:
+        """A plugin, mid-run on the gateway, is asking A a question. We stash
+        it in pending_questions, publish a lane_question Bus event so the
+        inter-lobular feed in the UI shows it, and route it into A's
+        inner_voice if A is currently in a turn (otherwise it waits for A's
+        next turn, when the brief will surface it)."""
+        state = self._state(pid)
+        row = {
+            "question_id": question.get("question_id") or "",
+            "question": question.get("question") or "",
+            "tool_call_id": question.get("tool_call_id") or "",
+            "default_if_quiet": question.get("default_if_quiet") or "",
+            "asked_at": time.time(),
+            "answered": False,
+        }
+        state.pending_questions.append(row)
+        # Keep the list bounded; drop oldest answered first, then oldest overall.
+        if len(state.pending_questions) > 20:
+            unanswered = [q for q in state.pending_questions if not q["answered"]]
+            answered = [q for q in state.pending_questions if q["answered"]]
+            state.pending_questions = (unanswered + answered)[-20:]
+        self.bus.publish(pid, {"type": "lane_question", **row})
+        # If a conversation is open, drop into inner voice so A hears it mid-sentence
+        if self._inner_getter is not None:
+            inner_q = self._inner_getter(pid)
+            if inner_q is not None:
+                try:
+                    inner_q.put_nowait({
+                        "from": "B", "kind": "lane_question",
+                        "text": ("your background work is asking you: "
+                                 f"{row['question']} "
+                                 f"[call answer_background_work with question_id={row['question_id']!r} "
+                                 "to reply]"),
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def pending_questions_brief(self, pid: int) -> str:
+        """Short text the next-turn brief surfaces so A sees queued questions."""
+        state = self._states.get(pid)
+        if not state or not state.pending_questions:
+            return ""
+        rows = [q for q in state.pending_questions if not q["answered"]][-5:]
+        if not rows:
+            return ""
+        lines = ["Your background work has been asking:"]
+        for q in rows:
+            age = int(time.time() - q["asked_at"])
+            lines.append(f"  - [{age}s ago, id={q['question_id']}] {q['question'][:300]}")
+        lines.append("Call answer_background_work(question_id, answer) for each one you want "
+                     "to address; others can wait or the default will apply at timeout.")
+        return "\n".join(lines)
+
+    async def answer_question(self, pid: int, question_id: str, answer: str) -> dict:
+        """A called answer_background_work. POST the answer back to the gateway
+        so the plugin's ask_voice unblocks, and mark it answered locally."""
+        state = self._states.get(pid)
+        if not state:
+            return {"ok": False, "reason": "no working lane state"}
+        row = next((q for q in state.pending_questions if q["question_id"] == question_id), None)
+        if row is None:
+            return {"ok": False, "reason": "unknown question_id"}
+        if row["answered"]:
+            return {"ok": False, "reason": "already answered"}
+        creds = self._creds.get(pid) or {}
+        webhook = creds.get("webhook") or {}
+        answer_url = webhook.get("answer_url")
+        secret = webhook.get("secret")
+        if not answer_url or not secret:
+            return {"ok": False, "reason": "gateway answer endpoint not configured"}
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(answer_url, json={
+                    "question_id": question_id, "answer": answer or "",
+                }, headers={"X-Internal-Secret": secret})
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": f"delivery failed: {type(exc).__name__}"}
+        if resp.status_code != 200:
+            return {"ok": False, "reason": f"gateway returned {resp.status_code}",
+                    "detail": resp.text[:200]}
+        row["answered"] = True
+        self.bus.publish(pid, {"type": "voice_answer", "question_id": question_id,
+                               "tool_call_id": row.get("tool_call_id", ""),
+                               "answer": (answer or "")[:400]})
+        return {"ok": True}
 
     async def _whisper(self, pid: int, tool_call_id: str, note: str) -> None:
         """Push a coaching note to the gateway's running plugin via the

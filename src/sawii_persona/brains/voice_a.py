@@ -72,6 +72,18 @@ A_TOOLS = [
         "parameters": {"type": "object", "properties": {
             "note": {"type": "string", "description": "The addition or correction, in one short sentence."}},
             "required": ["note"]}}},
+    {"type": "function", "function": {
+        "name": "answer_background_work",
+        "description": "Your background working lane has a question for you (shown in your inner voice "
+                       "or in the pending-questions brief). Call this to answer it; your answer "
+                       "unblocks the running tool and it continues with your decision folded in. "
+                       "Use this instead of 'telling' the user about the question - the lane needs your "
+                       "answer, not the user's. If you want the user's input first, ask them in a normal "
+                       "reply and defer answering the lane until they decide.",
+        "parameters": {"type": "object", "properties": {
+            "question_id": {"type": "string", "description": "The id shown with the question."},
+            "answer":      {"type": "string", "description": "Your decision, in your own voice."}},
+            "required": ["question_id", "answer"]}}},
 ]
 
 
