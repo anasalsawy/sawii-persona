@@ -66,7 +66,12 @@ Rules:
 
 MAX_B_ROUNDS = 24         # per directive; a hard upper bound
 B_HISTORY_KEEP = 6        # last N finished directives kept in memory for A to glance at
-TOOL_WEBHOOK_TIMEOUT = 45
+# httpx timeouts for the streaming webhook: snap on connect/write, NO cap on
+# read (streaming plugins may be alive for minutes — a phone call, a chat
+# monitor). Pool/write caps are short to catch stuck sockets.
+TOOL_WEBHOOK_CONNECT = 10
+TOOL_WEBHOOK_WRITE = 10
+TOOL_WEBHOOK_POOL = 10
 
 
 @dataclass
@@ -477,7 +482,9 @@ class Director:
         chunks: list[str] = []
         final_output: str = ""
         error_text: str = ""
-        async with httpx.AsyncClient(timeout=TOOL_WEBHOOK_TIMEOUT) as client:
+        tx = httpx.Timeout(connect=TOOL_WEBHOOK_CONNECT, read=None,
+                           write=TOOL_WEBHOOK_WRITE, pool=TOOL_WEBHOOK_POOL)
+        async with httpx.AsyncClient(timeout=tx) as client:
             async with client.stream("POST", url, json=body, headers=headers) as resp:
                 if resp.status_code != 200:
                     text = await resp.aread()
