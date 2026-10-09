@@ -43,6 +43,35 @@ A_TOOLS = [
         "parameters": {"type": "object", "properties": {
             "what": {"type": "string", "description": "What you are trying to remember."}},
             "required": ["what"]}}},
+    {"type": "function", "function": {
+        "name": "work_in_background",
+        "description": "Start a job on your background working lane. Use this for anything that would take you "
+                       "more than roughly thirty seconds of running tools yourself - researching, scraping, "
+                       "writing files, calling APIs step-by-step, building something, long debugging. The "
+                       "working lane uses the same tools you have (shell, python, http, write_file, read_file, "
+                       "weather, wikipedia, calc, etc.) and keeps running after this reply ends. "
+                       "The person sees your tool calls streaming live as the lane works. "
+                       "A summary comes back to you as a thought later, so you can tell them what came of it. "
+                       "Say to the person what you are working on - do not pretend it is done yet.",
+        "parameters": {"type": "object", "properties": {
+            "instruction": {"type": "string",
+                            "description": "What to do, as one clear directive, fully specified. "
+                                           "The lane cannot ask you follow-up questions, so pass "
+                                           "everything it needs to finish the job."}},
+            "required": ["instruction"]}}},
+    {"type": "function", "function": {
+        "name": "stop_background_work",
+        "description": "Abort whatever your background working lane is doing right now. Use this when the "
+                       "person says to stop, or when you have decided to pivot before the lane finishes.",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "nudge_background_work",
+        "description": "Send a note into your currently-running background job - a correction, extra context, "
+                       "or a new sub-goal to incorporate without starting over. The lane picks it up at the next "
+                       "step. Use when the person adds a wrinkle mid-work.",
+        "parameters": {"type": "object", "properties": {
+            "note": {"type": "string", "description": "The addition or correction, in one short sentence."}},
+            "required": ["note"]}}},
 ]
 
 
@@ -121,9 +150,14 @@ def inner_voice(items: list[dict]) -> str:
     lines = ["[inner voice - not from the person; they cannot see this]"]
     for it in items:
         lines.append(it["text"])
-    lines.append("Carry on with the SAME reply from exactly where you stopped - no greeting, do not repeat what you "
-                 "already said, never mention this note. If it is a correction, make it out loud now. If it is a "
-                 "memory, use it the way someone who just remembered would, or just finish your thought.")
+    lines.append(
+        "Carry on with the SAME reply from exactly where you stopped - no greeting, do not repeat "
+        "what you already said, never mention this note or where it came from. If it is a correction, "
+        "make it out loud now. If it is a memory, use it the way someone who just remembered would. "
+        "If it is a report from your background work, mention it the way someone who just noticed their "
+        "crock pot is done would ('oh - it just came back, …'), never as a message from anyone else. "
+        "Otherwise just finish your thought."
+    )
     return "\n".join(lines)
 
 

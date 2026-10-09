@@ -34,6 +34,7 @@ from typing import AsyncIterator
 
 from . import emotion
 from .brains import adjutant, live, observer, rememberer, verifier
+from .brains.director import Director
 from .brains.meter import Meter, carryforward_for_a, legacy_view, unrated
 from .brains.consults import ConsultBoard
 from .brains.prompts import A_DIARY, REMEMBER_DEEP, REMEMBER_LIVE, TRY_TO_REMEMBER
@@ -107,6 +108,15 @@ class Mind:
         self._bg: set[asyncio.Task] = set()
         self.deep = None  # set by lanes.deep.attach()
         self.outbox = None  # set by life.initiative.attach()
+        # B as director: a persistent worker that outlives any single turn.
+        # It uses the gateway's plugin webhook, so B has nothing to do until a
+        # chat request walks in with gateway_webhook attached (then
+        # director.set_credentials makes B reachable). The getter returns the
+        # inner-voice queue of the CURRENT turn, or None when no one is talking
+        # - B's reports then just sit in history until A opens its mouth again.
+        self._active_inner: dict[int, "asyncio.Queue"] = {}
+        self.director = Director(llm=self.b, bus=self.bus,
+                                 inner_voice_getter=self._active_inner.get)
 
     # ------------------------------------------------------------- helpers
     def scratch_for(self, pid: int) -> Scratch:
@@ -185,8 +195,18 @@ class Mind:
 
             # ---- the other lobes start now, while A speaks
             inner: asyncio.Queue = asyncio.Queue()
+            self._active_inner[pid] = inner  # Director reports flow in here while this turn is open
             live_lobes = _LiveLobes(self, persona, turn_id, user_text, tail_rows, recall_res, recall_text, rules, inner)
             live_lobes.start()
+
+            # Keep B's credentials fresh so direct_B works and so a running B
+            # can keep calling the gateway with the latest webhook even if the
+            # user re-logged-in or the gateway rotated its secret.
+            if gateway_webhook and (gateway_tools is not None):
+                self.director.set_credentials(pid,
+                                              persona_key=gateway_webhook.get("persona_key") or "",
+                                              webhook=gateway_webhook,
+                                              schemas=gateway_tools or [])
 
             gateway_names = {t.get("function", {}).get("name") for t in (gateway_tools or [])
                              if isinstance(t, dict)}
@@ -204,9 +224,12 @@ class Mind:
                     args_dict = {}
                 try:
                     import httpx  # local import to keep startup cheap for shared mode
+                    persona_key = gateway_webhook.get("persona_key") if gateway_webhook else None
+                    if not persona_key:
+                        return json.dumps({"error": "gateway webhook missing persona_key"})
                     async with httpx.AsyncClient(timeout=35) as client:
                         resp = await client.post(url, json={
-                            "persona_key": persona.get("key"),
+                            "persona_key": persona_key,
                             "tool": name, "args": args_dict,
                         }, headers={"X-Internal-Secret": secret})
                 except Exception as exc:  # noqa: BLE001
@@ -262,6 +285,18 @@ class Mind:
                             live_lobes.surfaced(rec)
                             out = rec.text or ("Nothing comes back - your adjutant finds nothing "
                                                "in the record about that.")
+                    elif call.name == "work_in_background":
+                        instruction = str(call.args().get("instruction", "")).strip()
+                        if not instruction:
+                            out = json.dumps({"error": "empty instruction"})
+                        else:
+                            out = await self.director.direct(pid, instruction)
+                    elif call.name == "stop_background_work":
+                        out = json.dumps(self.director.cancel(pid))
+                    elif call.name == "nudge_background_work":
+                        note = str(call.args().get("note", "")).strip()
+                        out = json.dumps(self.director.nudge(pid, note) if note
+                                         else {"ok": False, "reason": "empty note"})
                     elif call.name in gateway_names:
                         out = await _call_gateway(call.name, call.args)
                     else:
@@ -324,6 +359,10 @@ class Mind:
                 scratch.correction = ""  # delivered (B re-checks next review)
             scratch.conscience = ""
 
+            # Turn is wrapping up: stop routing Director reports into this
+            # queue, so the next turn gets a fresh one and background work
+            # that lands between turns is held in history until A speaks again.
+            self._active_inner.pop(pid, None)
             post = self.spawn(self._post_turn(persona, turn_id, user_text, reply, tail_rows, recall_res, board,
                                               result.chord, surface, failed, live_lobes), name=f"post-{turn_id}")
             done = {"type": "done", "turn_id": turn_id, "text": reply, "chord": result.chord,

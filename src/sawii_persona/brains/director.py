@@ -1,27 +1,28 @@
-"""B as director mode - a persistent worker A can hand multi-step jobs to.
+"""Background working lane - a persistent worker A hands multi-step jobs to.
 
-A is the voice. B is the hands. When the user asks for something that would
-take A minutes or hours of tool-calling, A hands it to B via the ``direct_B``
-tool: a single clear instruction. B accepts, starts working immediately in
-the background, and keeps running across the user's subsequent turns. The
-user is never left waiting on A because A does not DO things; A talks.
+From A's point of view this is her own hands doing her own work on a lane
+that keeps running after she stops talking. There is no "B" in the words
+A uses with the user; "B" is only the internal name for this lobe. User-
+facing strings call it "your background work", "the working lane", or
+simply never surface the lobe at all - the user sees tool chips streaming
+and knows Maya is doing the thing.
 
-B uses the gateway's plugins (shell, python, http, read_file, write_file,
-weather, …) through the same webhook A uses when model-driven tools are
-enabled. B's tool calls publish b_tool_start / b_tool_done events on the
-persona's Bus so the companion-app client can render a live worklog of what
-B is doing right now, same shape as A's inline tool chips.
+The lane uses the gateway's plugins (shell, python, http, read_file,
+write_file, weather, …) through the same webhook A uses when model-driven
+tools are enabled. Each call publishes b_tool_start / b_tool_done events
+on the Bus so the companion-app client renders a live worklog beside the
+chat.
 
-B is NOT the OpenHands workshop ("delegate_task"). OpenHands is a heavy
-external sandbox for building whole services. B is the lighter, more
-conversational directing loop that works WITH A over hours: A directs, B
-runs, B reports back, A directs again, user watches the whole thing.
+This is NOT the OpenHands workshop ("delegate_task"). OpenHands is a heavy
+external sandbox for building whole services; the lane is lighter and more
+conversational - A directs, the lane runs, the lane reports back, A
+directs again, the user watches the whole thing.
 
-One B per persona. B outlives any single user turn; it survives A finishing
-its reply, and it only pauses when either (a) the running directive
-completes, (b) A sends ``cancel_B`` for an abort, or (c) the process is
-restarted - in which case the next startup will not resurrect B. Persisting
-B's state across restarts is a future problem.
+One lane per persona. It outlives any single user turn; it survives A
+finishing a reply, and it only pauses when (a) the running directive
+completes, (b) A sends stop_background_work, or (c) the process is
+restarted - in which case the next startup will not resurrect the queue.
+Persisting across restarts is a future problem.
 """
 from __future__ import annotations
 
@@ -33,30 +34,32 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
-import httpx
-
 from ..llm import LLM, ToolCall, strip_reasoning
 
 log = logging.getLogger(__name__)
 
 
-B_SYSTEM = """You are B, the autonomous working lobe of a two-mind companion. A is the voice to the
-user; A has just directed you to do something and has already told the user you are on it.
+B_SYSTEM = """You are the background working self of a companion. The conversational self (the voice)
+has already told the user you are on it. Get it done.
 
 Rules:
 - You run tools (shell, python, http, read_file, write_file, list_files, weather, wikipedia, calc,
-  qr_code, time_in, word-count, save-note) directly. You do not need the user's permission for each
-  call; A has already decided this is yours to do.
-- Think concisely between calls. One short sentence per step is plenty - the user watches your tool
+  qr_code, time_in, word-count, save-note) directly. The voice already decided this is yours; you
+  do not stop to ask the user.
+- Think concisely between calls. One short sentence per step is plenty - the user watches tool
   chips, not your prose.
 - Save artefacts to the workspace (notes/, artifacts/, service/, etc.) as you go. Prefer files over
-  returning giant blobs of text.
-- When done, emit a SHORT final summary (no more than a short paragraph) with: what you did, what
-  files you produced, what remains open. This summary is handed back to A, who will decide what to
-  tell the user and what to direct you to do next.
+  giant blobs of returned text.
+- You and the voice are ONE self. Never refer to the voice as a separate agent; this prose stays
+  inside your head.
+- When done, emit a SHORT final summary (no more than a short paragraph): what you did, what files
+  you produced, what remains open. The voice uses this to tell the user and decide what is next.
 - If a step fails, retry once with a fix. If it fails again, stop and summarise what blocked you so
-  A can decide the next move.
+  the voice can decide the next move.
 - Never claim to have done something you did not verify with a tool.
+- A note from the voice may arrive mid-work as a [note from the voice] line in a tool result's
+  place - treat it as a correction or extra context from your own thinking, incorporate it in the
+  next step, do not restart.
 - Use at most {max_rounds} rounds of tool calls per directive.
 """
 
@@ -75,6 +78,7 @@ class _Directive:
     summary: str = ""
     error: str = ""
     status: str = "queued"          # queued -> running -> done | failed | cancelled
+    pending_notes: list = field(default_factory=list)   # whisper_B nudges to fold in next round
 
 
 @dataclass
@@ -149,6 +153,28 @@ class Director:
         state.cancel_requested = True
         return {"cancelled": True, "id": state.current.id}
 
+    def nudge(self, pid: int, note: str) -> dict:
+        """Inject a mid-work note into the running directive.
+
+        The lane sees the note at the next round and incorporates it. If no
+        job is running, the note is appended to whatever directive runs next
+        from the queue; if the queue is empty too, nothing happens.
+        """
+        note = (note or "").strip()
+        if not note:
+            return {"ok": False, "reason": "empty note"}
+        state = self._states.get(pid)
+        if not state:
+            return {"ok": False, "reason": "no working lane yet"}
+        if state.current is not None:
+            state.current.pending_notes.append(note)
+            self.bus.publish(pid, {"type": "b_nudge", "job": state.current.id, "note": note})
+            return {"ok": True, "attached_to": state.current.id}
+        if state.queue._queue:  # type: ignore[attr-defined]
+            state.queue._queue[-1].pending_notes.append(note)  # type: ignore[attr-defined]
+            return {"ok": True, "attached_to_queued": True}
+        return {"ok": False, "reason": "nothing is working right now"}
+
     def shutdown_persona(self, pid: int) -> None:
         state = self._states.get(pid)
         if state and state.worker_task:
@@ -193,14 +219,22 @@ class Director:
                 "summary": directive.summary[:600], "error": directive.error[:200],
                 "tools": directive.tool_count,
             })
-            # Push a report into A's inner_voice if there is a conversation open
+            # Push a report into A's inner_voice if there is a conversation open.
+            # Phrasing is deliberate: A hears this as her OWN background work
+            # resolving, not as a message from an agent. The user never hears
+            # the words "worker" or "lane" from A's mouth.
             if self._inner_getter is not None:
                 inner_q = self._inner_getter(state.persona_id)
                 if inner_q is not None:
-                    note = (f"B just finished job {directive.id} ({directive.status}): "
-                            f"{directive.summary[:400] or directive.error[:200]}")
+                    body = directive.summary[:400] or directive.error[:200] or "(no result)"
+                    verb = {"done": "finished",
+                            "failed": "hit a wall",
+                            "cancelled": "was stopped"}.get(directive.status, directive.status)
+                    note = (f"your background work on \"{directive.instruction[:140]}\" {verb}: "
+                            f"{body}")
                     try:
-                        inner_q.put_nowait({"from": "B", "kind": "b_report", "text": note})
+                        inner_q.put_nowait({"from": "B", "kind": "background_work",
+                                            "text": note})
                     except Exception:  # noqa: BLE001
                         pass
             state.history.append(directive)
@@ -222,12 +256,17 @@ class Director:
         for round_n in range(MAX_B_ROUNDS):
             if state.cancel_requested:
                 directive.status = "cancelled"
-                directive.error = "cancelled by A or user"
+                directive.error = "cancelled by the voice or by the user"
                 return
+            # Fold in any mid-work nudges from the voice BEFORE this round plans.
+            while directive.pending_notes:
+                note = directive.pending_notes.pop(0)
+                msgs.append({"role": "user",
+                             "content": f"[note from the voice] {note}"})
             try:
                 res = await self.llm.chat(msgs, tools=schemas, temperature=0.3, max_tokens=1500)
             except Exception as exc:  # noqa: BLE001
-                directive.error = f"B's model call failed: {type(exc).__name__}"
+                directive.error = f"working lane model call failed: {type(exc).__name__}"
                 directive.status = "failed"
                 return
             text = strip_reasoning(res.text or "").strip()
@@ -276,6 +315,7 @@ class Director:
         persona_key = creds.get("persona_key")
         if not url or not secret or not persona_key:
             return json.dumps({"error": "B has no webhook credentials"})
+        import httpx  # local import: tests run without the httpx dep
         async with httpx.AsyncClient(timeout=TOOL_WEBHOOK_TIMEOUT) as client:
             resp = await client.post(url, json={
                 "persona_key": persona_key, "tool": name, "args": args,
