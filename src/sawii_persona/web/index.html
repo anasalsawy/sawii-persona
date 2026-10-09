@@ -83,7 +83,7 @@ setInterval(()=>{const now=Date.now()/1000;let t=lastReplyAt?"since last reply "
 function bubble(text,who,cls=""){const d=document.createElement("div");d.className="b "+who+" "+cls;d.textContent=text;$("#log").appendChild(d);$("#log").scrollTop=1e9;return d}
 function toast(t){const e=$("#toast");e.textContent=t;e.style.display="block";clearTimeout(e._t);e._t=setTimeout(()=>e.style.display="none",9000)}
 
-async function api(path,opt={}){const r=await fetch(path,{...opt,headers:H()});if(r.status==401){try{localStorage.removeItem("sawii_key")}catch(e){};location.reload()}return r.json()}
+async function api(path,opt={}){const r=await fetch(path,{...opt,headers:H()});if(r.status==401){KEY="";try{localStorage.removeItem("sawii_key")}catch(e){};$("#gate").style.display="";$("#key").value="";toast("That key didn't work. Paste a valid persona key.");throw new Error("401")}return r.json()}
 
 async function enter(){
   const p=await api("/v1/persona");$("#gate").style.display="none";
@@ -93,8 +93,8 @@ async function enter(){
   const c=await api("/v1/persona/clock");if(c.since_your_last_reply_seconds!=null)lastReplyAt=Date.now()/1000-c.since_your_last_reply_seconds;
   refresh();listen();
 }
-$("#enter").onclick=()=>{KEY=$("#key").value.trim();try{localStorage.setItem("sawii_key",KEY)}catch(e){};enter()};
-if(KEY)enter();
+$("#enter").onclick=()=>{const k=$("#key").value.trim();if(!k)return;KEY=k;try{localStorage.setItem("sawii_key",KEY)}catch(e){};enter().catch(e=>{})};
+if(KEY)enter().catch(e=>{});
 
 async function refresh(){
   const e=await api("/v1/persona/emotion");$("#mood").style.background=e.persona.color;$("#moodw").textContent="feels "+e.persona.words+" · you seem "+e.user.words;
