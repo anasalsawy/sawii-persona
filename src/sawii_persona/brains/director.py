@@ -263,14 +263,35 @@ class Director:
                 note = directive.pending_notes.pop(0)
                 msgs.append({"role": "user",
                              "content": f"[note from the voice] {note}"})
+            # Stream B's output: text pieces publish as b_delta so the UI
+            # shows B thinking between tool calls, exactly like A's chat
+            # bubble streams. Tool calls accumulate and run after the stream.
+            text_parts: list[str] = []
+            calls_dict: dict[int, dict] = {}
             try:
-                res = await self.llm.chat(msgs, tools=schemas, temperature=0.3, max_tokens=1500)
+                stream = self.llm.stream(msgs, tools=schemas, temperature=0.3, max_tokens=1500)
+                try:
+                    async for ev in stream:
+                        kind = ev.get("type")
+                        if kind == "text":
+                            piece = str(ev.get("text", ""))
+                            if piece:
+                                text_parts.append(piece)
+                                self.bus.publish(state.persona_id, {
+                                    "type": "b_delta", "job": directive.id, "text": piece,
+                                })
+                        elif kind == "tool_call":
+                            tc = ev.get("call")
+                            if tc is not None:
+                                calls_dict.setdefault(id(tc), tc)
+                finally:
+                    await stream.aclose()
             except Exception as exc:  # noqa: BLE001
                 directive.error = f"working lane model call failed: {type(exc).__name__}"
                 directive.status = "failed"
                 return
-            text = strip_reasoning(res.text or "").strip()
-            calls = list(res.tool_calls or [])
+            text = strip_reasoning("".join(text_parts)).strip()
+            calls = list(calls_dict.values())
             if not calls:
                 directive.summary = text or "(no summary)"
                 return
@@ -294,7 +315,8 @@ class Director:
                 started = time.monotonic()
                 ok = True
                 try:
-                    out = await self._run_tool_via_webhook(state.persona_id, call.name, args_safe)
+                    out = await self._run_tool_via_webhook(state.persona_id, call.name, args_safe,
+                                                           job_id=directive.id, tool_id=call.id)
                 except Exception as exc:  # noqa: BLE001
                     out = json.dumps({"error": f"{type(exc).__name__}: {exc}"[:200]})
                     ok = False
@@ -307,7 +329,12 @@ class Director:
         directive.summary = (f"B hit the {MAX_B_ROUNDS}-round limit before finishing. "
                              "What is already done is in the workspace.")
 
-    async def _run_tool_via_webhook(self, pid: int, name: str, args: dict) -> str:
+    async def _run_tool_via_webhook(self, pid: int, name: str, args: dict,
+                                     job_id: str, tool_id: str) -> str:
+        """POST the tool call, read the SSE response, publish each chunk as a
+        b_tool_delta so the chip label can grow live. Returns the final output
+        (concatenation of deltas) to feed back into B's LLM as the tool msg.
+        """
         creds = self._creds.get(pid) or {}
         webhook = creds.get("webhook") or {}
         url = webhook.get("url")
@@ -316,16 +343,54 @@ class Director:
         if not url or not secret or not persona_key:
             return json.dumps({"error": "B has no webhook credentials"})
         import httpx  # local import: tests run without the httpx dep
+        body = {"persona_key": persona_key, "tool": name, "args": args}
+        headers = {"X-Internal-Secret": secret, "Accept": "text/event-stream"}
+        chunks: list[str] = []
+        final_output: str = ""
+        error_text: str = ""
         async with httpx.AsyncClient(timeout=TOOL_WEBHOOK_TIMEOUT) as client:
-            resp = await client.post(url, json={
-                "persona_key": persona_key, "tool": name, "args": args,
-            }, headers={"X-Internal-Secret": secret})
-        if resp.status_code != 200:
-            return json.dumps({"error": f"gateway returned {resp.status_code}",
-                               "detail": resp.text[:200]})
-        try:
-            data = resp.json()
-        except Exception:  # noqa: BLE001
-            return resp.text[:16000]
-        out = data.get("output")
-        return out if isinstance(out, str) else json.dumps(data)[:16000]
+            async with client.stream("POST", url, json=body, headers=headers) as resp:
+                if resp.status_code != 200:
+                    text = await resp.aread()
+                    return json.dumps({"error": f"gateway returned {resp.status_code}",
+                                       "detail": text.decode(errors="replace")[:200]})
+                ctype = (resp.headers.get("content-type") or "").lower()
+                if "text/event-stream" not in ctype:
+                    # Legacy JSON response from an older gateway: read and return as-is.
+                    text = (await resp.aread()).decode(errors="replace")
+                    try:
+                        data = json.loads(text)
+                        out = data.get("output")
+                        return out if isinstance(out, str) else json.dumps(data)[:16000]
+                    except Exception:  # noqa: BLE001
+                        return text[:16000]
+                buffer = ""
+                async for raw in resp.aiter_text():
+                    buffer += raw
+                    while "\n\n" in buffer:
+                        frame, buffer = buffer.split("\n\n", 1)
+                        line = frame.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        try:
+                            event = json.loads(line[5:].strip())
+                        except Exception:  # noqa: BLE001
+                            continue
+                        kind = event.get("type")
+                        if kind == "delta":
+                            text = str(event.get("text", ""))
+                            if not text:
+                                continue
+                            chunks.append(text)
+                            self.bus.publish(pid, {
+                                "type": "b_tool_delta", "job": job_id, "id": tool_id,
+                                "name": name, "text": text,
+                            })
+                        elif kind == "done":
+                            final_output = str(event.get("output", "") or "")
+                            error_text = str(event.get("error", "") or "")
+        if error_text:
+            return json.dumps({"error": error_text})[:16000]
+        if final_output:
+            return final_output[:16000]
+        return "".join(chunks)[:16000]
