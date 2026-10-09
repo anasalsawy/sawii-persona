@@ -73,7 +73,7 @@ class SleepTests(MindCase):
         self.assertIn("Maya", p["narrative"])
         self.assertIn("worry", p["psych_profile"])
         tiers = {r["tier"] for r in await self.mind.store.all("SELECT tier FROM juice")}
-        self.assertEqual(tiers, {"compressed"})  # baked then squeezed
+        self.assertEqual(tiers, {"baked"})  # stubborn memory: raw juice is kept, never squeezed
         ds = report["subconscious"]["dataset"]
         with open(ds, encoding="utf-8") as fh:
             lines = [json.loads(x) for x in fh]

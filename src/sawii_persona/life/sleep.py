@@ -48,10 +48,10 @@ class Sleep:
             except Exception as exc:  # noqa: BLE001
                 log.warning("sleep step %s failed: %s", step.__name__, exc)
                 report[step.__name__] = f"failed: {exc}"[:200]
-        report["faded_hypotheses"] = await self.mind.memory.fade_hypotheses(pid, self.mind.s.psyche_half_life_days)
-        report["decayed_thoughts"] = await self.mind.store.run(
-            "UPDATE thoughts SET status='decayed' WHERE persona_id = ? AND status='pending' AND created_at < ?",
-            pid, now() - 3 * 86400)
+        # Stubborn memory: nothing is faded or decayed on time. Hypotheses only move on real evidence
+        # (confirm/contradict); thoughts stay pending until acted on, no silent expiry.
+        report["faded_hypotheses"] = 0
+        report["decayed_thoughts"] = 0
         try:
             report["subconscious"] = await self.ft.consolidate(persona)
         except Exception as exc:  # noqa: BLE001
@@ -123,7 +123,7 @@ class Sleep:
         pid = persona["id"]
         rows = await self.mind.store.all(
             "SELECT id, event_id, text, quote FROM layers WHERE persona_id = ? AND status='active' AND salience >= 2 "
-            "AND layer IN ('note','fact') ORDER BY id DESC LIMIT 300", pid)
+            "AND layer IN ('note','fact') ORDER BY id DESC LIMIT 2000", pid)
         by_event: dict[int, dict] = {}
         for r in rows:
             by_event.setdefault(r["event_id"], r)

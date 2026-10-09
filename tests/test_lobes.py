@@ -321,3 +321,56 @@ class BoundaryTests(StoreCase):
         self.assertEqual(res.text, "Done.")
         self.assertEqual(res.heard, [])
         self.assertEqual(res.chord, {"joy": 0.5})
+
+
+class StubbornMemoryTests(StoreCase):
+    """Memory is persistent, non-relenting, fixed, absolute. Nothing is forgotten on time,
+    nothing is evicted for space, nothing is compressed away. Overflow caps that silently
+    dropped old records are gone."""
+
+    async def test_hypothesis_confidence_does_not_fade_with_time(self):
+        tid = await self.turn("I'm nervous about my sister Maya's exam", "ok")
+        from sawii_persona.memory.records import ground
+        await self.memory.apply_hypotheses(
+            self.pid, [{"op": "new", "claim": "worries about family", "quotes": ["nervous about my sister"]}],
+            sources=["I'm nervous about my sister Maya's exam"])
+        before = (await self.memory.hypotheses(self.pid))[0]["confidence"]
+        # Simulate 100 days later: effective_confidence must equal the stored confidence
+        self.assertEqual(self.memory.effective_confidence(before and (await self.memory.hypotheses(self.pid))[0], 21,
+                                                          at=time.time() + 100 * 86400),
+                         float((await self.memory.hypotheses(self.pid))[0]["confidence"]))
+        self.assertEqual(await self.memory.fade_hypotheses(self.pid, 21), 0)
+        self.assertEqual(len(await self.memory.hypotheses(self.pid)), 1)  # still here
+
+    async def test_recall_considers_old_layers_past_the_old_cap(self):
+        """The old LIMIT 4000 silently dropped old memories. Prove a very old one still comes back."""
+        from sawii_persona.memory.recall import Recall
+        # One rare, specific layer FIRST (very old by id order)
+        t_old = await self.turn("my dog Rex stole my chair in 2020", "ok")
+        ev_old = await self.memory.new_event(self.pid, t_old)
+        await self.memory.add_layers(self.pid, ev_old, [
+            {"layer": "note", "author": "C", "kind": "detail",
+             "text": "Rex stole chair in 2020", "quote": "my dog Rex stole my chair",
+             "salience": 3}], sources=["my dog Rex stole my chair in 2020"])
+        # Then pile on 50 unrelated recent layers so the old one is far from the top of id-DESC
+        for i in range(50):
+            tid = await self.turn(f"ordinary chat #{i}", "ok")
+            ev = await self.memory.new_event(self.pid, tid)
+            await self.memory.add_layers(self.pid, ev, [
+                {"layer": "note", "author": "C", "kind": "aside",
+                 "text": f"small aside {i}", "quote": f"ordinary chat #{i}", "salience": 1}],
+                sources=[f"ordinary chat #{i}"])
+        rec = Recall(self.store, self.memory, self.embedder)
+        out = await rec.recall(self.persona, "the dog that keeps stealing my chair")
+        self.assertIn("Rex stole my chair", out.text)
+
+    async def test_subconscious_does_not_evict_juice(self):
+        """Overflowing bowl is off: juice grows past the old 'buffer' size without eviction."""
+        from sawii_persona.life.subconscious import Subconscious
+        sub = Subconscious(self.store, self.embedder, floor=0.0, buffer_rows=5, bowl_ratio=0.5)
+        for i in range(20):  # 4x the old 'capacity'
+            await sub.ingest(self.persona, None, f"text {i}", "ok", chord={"joy": 0.5}, salience=1)
+        row = await self.store.one("SELECT COUNT(*) AS n FROM juice WHERE persona_id = ?", self.pid)
+        self.assertEqual(row["n"], 20)
+        tiers = {r["tier"] for r in await self.store.all("SELECT tier FROM juice WHERE persona_id = ?", self.pid)}
+        self.assertNotIn("compressed", tiers)  # never squeezed

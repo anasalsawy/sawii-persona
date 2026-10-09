@@ -98,10 +98,13 @@ class Recall:
         self.half_life_days = half_life_days
 
     async def _rows(self, pid: int, exclude_turn_ids: set | None = None) -> list[dict]:
+        # Stubborn memory: NO cap. Every active layer is considered for every turn.
+        # At scale (past ~10k layers) this must move to a vector index (sqlite-vec / FAISS);
+        # the ranking stays the same, only the candidate shortlist is built by the index.
         rows = await self.store.all(
             "SELECT l.*, e.created_at AS ev_at, e.surface AS ev_surface, e.chord AS ev_chord, e.turn_id "
             "FROM layers l JOIN events e ON e.id = l.event_id "
-            "WHERE l.persona_id = ? AND l.status = 'active' ORDER BY l.id DESC LIMIT 4000", pid)
+            "WHERE l.persona_id = ? AND l.status = 'active' ORDER BY l.id DESC", pid)
         exclude_turn_ids = exclude_turn_ids or set()
         return [r for r in rows if r["turn_id"] not in exclude_turn_ids]
 

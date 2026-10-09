@@ -86,19 +86,10 @@ class Subconscious:
         return {"variance": variance, "kept": kept, "markers": markers, "novelty": round(novelty, 3),
                 "juice_id": juice_id}
 
-    async def trim(self, pid: int) -> int:
-        """The overflowing bowl: only at the rim, only compressed rows, oldest first.
-        Raw (un-baked) juice is never evicted for space."""
-        count = (await self.store.one("SELECT COUNT(*) AS n FROM juice WHERE persona_id = ?", pid))["n"]
-        if count <= self.buffer_rows:
-            return 0
-        target = int(self.buffer_rows * self.bowl_ratio)
-        excess = count - target
-        rows = await self.store.all("SELECT id FROM juice WHERE persona_id = ? AND tier = 'compressed' "
-                                    "ORDER BY id LIMIT ?", pid, excess)
-        for r in rows:
-            await self.store.run("DELETE FROM juice WHERE id = ?", r["id"])
-        return len(rows)
+    async def trim(self, _persona_or_pid=None) -> int:
+        """Stubborn memory: no overflow. Juice is kept raw forever; nothing is evicted for space.
+        The method is kept so existing callers do not have to change; it always returns 0."""
+        return 0
 
     async def occupancy(self, pid: int) -> dict:
         rows = await self.store.all("SELECT tier, COUNT(*) AS n, SUM(raw_chars + length(compressed)) AS b "

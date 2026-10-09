@@ -71,3 +71,4 @@ older docs (`docs/origins/`), this file wins.
   3,8 next … from featherless"); swap A to a Fireworks/Together model when fine-tuning starts.
 * **Two parallel peer reasoners** (THREE_BRAINS.md) stay parked; consultants cover "many minds at once".
 * Tuning numbers (recall band 0.30, live checks per reply 3, outreach cap 4/day, quiet hours 22:30-08:00, juice floor 0.55) are starting points, all env-tunable.
+* **Stubborn memory** - "i want persistant non relenting stubborn fixed absolute long memoery". Removed every silent eviction / fade / compression path: `fade_hypotheses` is a no-op, thought decay is off, the subconscious bowl does not overflow, baked juice is not compressed, and `recall._rows` no longer caps at 4000 - the full active history is considered every turn. At scale this needs an ANN index; the data policy does not change.

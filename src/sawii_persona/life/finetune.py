@@ -7,8 +7,8 @@ Order is the safety property:
     2. mark exported    - the database records what provably left
     3. train            - provider: fireworks (LoRA SFT) | command (your own trainer) | none
     4. bake             - only on success; a failed night leaves the juice raw for tomorrow
-    5. compress         - only baked rows; the verbatim copy lives on in the archive
-    6. overflow         - the bowl sheds the oldest compressed rows only at the rim
+    5. (stubborn memory) baked juice is NOT compressed and NOT evicted - the raw rows are kept forever,
+       as what the persona became. The archive in ndsmc-raw/2 remains the byte-exact source.
 When training succeeds the new adapter becomes this persona's A model automatically.
 """
 from __future__ import annotations
@@ -99,7 +99,6 @@ class FineTuner:
         report["juice"] = len(rows)
         if len(rows) < self.s.finetune_min_examples:
             report["status"] = "not_enough_juice"
-            await self.compress(pid)
             return report
         # 1. export verbatim
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -158,7 +157,7 @@ class FineTuner:
             await self.store.update("finetune_jobs", job_id, status="pending", detail="no trainer configured; "
                                     "dataset exported and waiting", updated_at=now())
             report["status"] = "exported_waiting_for_trainer"
-        await self.compress(pid)
+        # stubborn memory: baked juice is kept raw forever; compress() is retained but never called here.
         return report
 
     async def _run_command(self, path: str) -> tuple[bool, str]:

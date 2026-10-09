@@ -83,7 +83,8 @@ class LayerTests(StoreCase):
         self.assertEqual(active[0]["revision_of"], h["id"])
         # decay: an old unconfirmed hypothesis fades
         await self.store.run("UPDATE hypotheses SET last_confirmed_at = ?", time.time() - 400 * 86400)
-        self.assertEqual(await self.memory.fade_hypotheses(self.pid, 21), 1)
+        # Stubborn memory: no time-based fading. fade_hypotheses is a no-op.
+        self.assertEqual(await self.memory.fade_hypotheses(self.pid, 21), 0)
 
     async def test_loops_and_due(self):
         await self.turn("remind me to call mom tomorrow at 6pm", reply="I'll remind you.")

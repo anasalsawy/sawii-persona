@@ -183,6 +183,8 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
                         extra = {}
                         if "verdict" in ev:
                             extra["sawii_verdict"] = ev["verdict"]
+                        if ev.get("inner"):
+                            extra["sawii_inner"] = ev["inner"]  # who spoke to A mid-reply (B/C), kinds only
                         chunk = {"id": cid, "object": "chat.completion.chunk", "created": created,
                                  "model": "sawii-persona", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                                  **extra}

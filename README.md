@@ -279,9 +279,24 @@ lobe does: a memory becomes an "oh wait" follow-up (#2); a live check or gut rea
 *Code:* `store.py` (schema), `memory/records.py` (writing), `memory/grounding.py` (quote-or-die),
 `memory/recall.py` (reading).
 
-### 6.1 The journal - raw text is sacred
-Every message and reply is stored verbatim in `turns` and never rewritten. No code path summarizes,
-normalizes or "corrects" what the person wrote. Quotes are always cut from this original text.
+### 6.1 Stubborn memory - nothing is forgotten, ever
+Memory is persistent, non-relenting, fixed, absolute. The policy, by design and by test:
+- The verbatim journal (`turns`) is **never rewritten, never summarised, never trimmed.**
+- Every active `layer` is considered on every turn - there is **no silent recall cap**. (At scale
+  past ~10k layers the shortlist is built by a vector index; the data stays whole.)
+- Hypothesis confidence **does not fade on time.** It only moves on `confirm` / `contradict` with
+  evidence. `fade_hypotheses` is a no-op kept for signature compatibility.
+- Thoughts (`reflection`, `recollection`, `sudden`, `dream`…) **do not decay** after N days. They
+  stay pending until acted on.
+- The subconscious buffer **has no overflowing bowl.** Juice is never evicted for space and never
+  compressed down. The byte-exact archive (`ndsmc-raw/2`) + the baked juice both live forever.
+- Tenderness is a boolean that does not age.
+- Supersession, when it fires, **marks the old row superseded** (status change, kept and linked).
+  Nothing is ever deleted on supersede.
+
+What *does* run every night is still just the summary layer: A's self-narrative and C's psych
+profile are rewritten (and B audits them to strike anything the raw record does not support). The
+raw record under them is untouched.
 
 ### 6.2 One record per moment, three layers deep
 Each turn creates one `event`; layers hang off it, each written by exactly one lobe:

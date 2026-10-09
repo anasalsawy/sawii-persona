@@ -176,7 +176,7 @@ class Memory:
                 continue
             olds = await self.store.all(
                 "SELECT * FROM layers WHERE persona_id = ? AND status = 'active' AND id < ? AND kind IN "
-                "('preference','plan','detail','fact') ORDER BY id DESC LIMIT 200", pid, new["id"])
+                "('preference','plan','detail','fact') ORDER BY id DESC", pid, new["id"])
             new_words = content_words(new["text"] + " " + new["quote"] + " " + new["anchor"])
             new_v = from_blob(new["hvec"])
             new_said = new["quote"] or new["text"]
@@ -233,15 +233,15 @@ class Memory:
 
     async def entities_in(self, pid: int, text: str) -> list[dict]:
         low = (text or "").lower()
-        rows = await self.store.all("SELECT * FROM entities WHERE persona_id = ? ORDER BY mention_count DESC "
-                                    "LIMIT 300", pid)
+        rows = await self.store.all("SELECT * FROM entities WHERE persona_id = ? ORDER BY mention_count DESC", pid)
         return [r for r in rows if re.search(r"\b" + re.escape(r["name"].lower()) + r"\b", low)]
 
     # ------------------------------------------------------------------ psyche
     @staticmethod
-    def effective_confidence(h: dict, half_life_days: float, at: float | None = None) -> float:
-        age_days = max(0.0, ((at or now()) - h["last_confirmed_at"]) / 86400)
-        return float(h["confidence"]) * (0.5 ** (age_days / max(0.5, half_life_days)))
+    def effective_confidence(h: dict, half_life_days: float = 0.0, at: float | None = None) -> float:
+        """Stubborn memory: confidence does NOT fade with time. It only moves on confirm/contradict.
+        ``half_life_days`` is kept in the signature for backward compatibility and ignored."""
+        return float(h["confidence"])
 
     async def hypotheses(self, pid: int, *, status: str = "active") -> list[dict]:
         return await self.store.all("SELECT * FROM hypotheses WHERE persona_id = ? AND status = ? "
@@ -307,13 +307,10 @@ class Memory:
                 stats["dropped"] += 1
         return stats
 
-    async def fade_hypotheses(self, pid: int, half_life_days: float, floor: float = 0.08) -> int:
-        n = 0
-        for h in await self.hypotheses(pid):
-            if self.effective_confidence(h, half_life_days) < floor:
-                await self.store.update("hypotheses", h["id"], status="faded")
-                n += 1
-        return n
+    async def fade_hypotheses(self, pid: int, half_life_days: float = 0.0, floor: float = 0.0) -> int:
+        """Stubborn memory: nothing is faded on time. Hypotheses only move state when the record itself
+        changes (contradiction with a revised claim); nothing is ever quietly aged out."""
+        return 0
 
     # ------------------------------------------------------------------ loops (B)
     async def open_loops(self, pid: int) -> list[dict]:
