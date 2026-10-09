@@ -214,7 +214,7 @@ class Mind:
             gateway_names = {t.get("function", {}).get("name") for t in (gateway_tools or [])
                              if isinstance(t, dict)}
 
-            async def _call_gateway(name: str, raw_args) -> str:
+            async def _call_gateway(name: str, raw_args, tool_call_id: str = "") -> str:
                 if not gateway_webhook:
                     return json.dumps({"error": "gateway tool but no webhook configured"})
                 url = gateway_webhook.get("url")
@@ -230,22 +230,59 @@ class Mind:
                     persona_key = gateway_webhook.get("persona_key") if gateway_webhook else None
                     if not persona_key:
                         return json.dumps({"error": "gateway webhook missing persona_key"})
-                    async with httpx.AsyncClient(timeout=35) as client:
-                        resp = await client.post(url, json={
-                            "persona_key": persona_key,
-                            "tool": name, "args": args_dict,
-                        }, headers={"X-Internal-Secret": secret})
+                    body = {"persona_key": persona_key, "tool": name, "args": args_dict,
+                            "tool_call_id": tool_call_id}
+                    headers = {"X-Internal-Secret": secret, "Accept": "text/event-stream"}
+                    tx = httpx.Timeout(connect=10, read=120, write=10, pool=10)
+                    async with httpx.AsyncClient(timeout=tx) as client:
+                        async with client.stream("POST", url, json=body, headers=headers) as resp:
+                            if resp.status_code != 200:
+                                text = (await resp.aread()).decode(errors="replace")
+                                return json.dumps({"error": f"gateway returned {resp.status_code}",
+                                                   "detail": text[:200]})
+                            ctype = (resp.headers.get("content-type") or "").lower()
+                            if "text/event-stream" not in ctype:
+                                # Legacy JSON gateway: read whole body.
+                                text = (await resp.aread()).decode(errors="replace")
+                                try:
+                                    data = json.loads(text)
+                                except Exception:  # noqa: BLE001
+                                    return text[:16000]
+                                out = data.get("output")
+                                return out if isinstance(out, str) else json.dumps(data)[:16000]
+                            # SSE gateway: accumulate deltas; prefer the explicit
+                            # done frame's output so streaming plugins don't
+                            # hand A raw event text.
+                            chunks: list[str] = []
+                            final_output = ""
+                            error_text = ""
+                            buffer = ""
+                            async for raw in resp.aiter_text():
+                                buffer += raw
+                                while "\n\n" in buffer:
+                                    frame, buffer = buffer.split("\n\n", 1)
+                                    line = frame.strip()
+                                    if not line.startswith("data:"):
+                                        continue
+                                    try:
+                                        event = json.loads(line[5:].strip())
+                                    except Exception:  # noqa: BLE001
+                                        continue
+                                    kind = event.get("type")
+                                    if kind == "delta":
+                                        piece = str(event.get("text", ""))
+                                        if piece:
+                                            chunks.append(piece)
+                                    elif kind == "done":
+                                        final_output = str(event.get("output", "") or "")
+                                        error_text = str(event.get("error", "") or "")
+                            if error_text:
+                                return json.dumps({"error": error_text})[:16000]
+                            if final_output:
+                                return final_output[:16000]
+                            return "".join(chunks)[:16000]
                 except Exception as exc:  # noqa: BLE001
                     return json.dumps({"error": f"gateway tool call failed: {type(exc).__name__}"})
-                if resp.status_code != 200:
-                    return json.dumps({"error": f"gateway returned {resp.status_code}",
-                                       "detail": resp.text[:200]})
-                try:
-                    data = resp.json()
-                except Exception:  # noqa: BLE001
-                    return resp.text[:16000]
-                out = data.get("output")
-                return out if isinstance(out, str) else json.dumps(data)[:16000]
 
             async def run_tool(call: ToolCall) -> str:
                 import time as _time
@@ -308,7 +345,7 @@ class Mind:
                         else:
                             out = json.dumps(await self.director.answer_question(pid, qid, ans))
                     elif call.name in gateway_names:
-                        out = await _call_gateway(call.name, call.args)
+                        out = await _call_gateway(call.name, call.args, tool_call_id=call.id)
                     else:
                         out = json.dumps({"error": f"unknown tool {call.name}"})
                 except BaseException:  # noqa: BLE001
@@ -379,20 +416,49 @@ class Mind:
                     "tools": result.tools_used, "spent_seconds": round(clock.spent, 2),
                     "inner": [{"from": h["from"], "kind": h["kind"]} for h in result.heard]}
             if self.s.show_verdict_to_user and not failed:
-                try:
-                    verdict = await asyncio.wait_for(asyncio.shield(post), timeout=60)
+                # Do NOT hold the turn lock waiting for B's review + C's 32B
+                # observation: the user sees `done` (and can send the next
+                # message) the moment A stops speaking. The verdict chip is
+                # delivered as a `verdict` Bus event when the pipeline lands;
+                # clients render it late via /v1/events. If the verdict is
+                # already ready (fast models), attach it inline as before.
+                async def _publish_verdict() -> None:
+                    verdict = await post
+                    if verdict:
+                        self.bus.publish(pid, {"type": "verdict", "turn_id": turn_id, "verdict": verdict})
+                if post.done():
+                    verdict = post.result()
                     if verdict:
                         done["verdict"] = verdict
-                except asyncio.TimeoutError:
-                    pass
+                else:
+                    self.spawn(_publish_verdict(), name=f"verdict-{turn_id}")
             yield done
 
     async def chat(self, pid: int, text: str, **kw) -> dict:
-        """Non-streaming convenience."""
+        """Non-streaming convenience. When show_verdict is on, wait briefly for
+        the verdict event so callers (and tests) still see it attached."""
         out = {}
-        async for ev in self.respond(pid, text, **kw):
-            if ev["type"] == "done":
-                out = ev
+        verdict_ev: dict = {}
+        q = self.bus.subscribe(pid) if self.s.show_verdict_to_user else None
+        try:
+            async for ev in self.respond(pid, text, **kw):
+                if ev["type"] == "done":
+                    out = ev
+            if q is not None and "verdict" not in out:
+                end = time.monotonic() + 15
+                while time.monotonic() < end:
+                    try:
+                        bev = await asyncio.wait_for(q.get(), timeout=max(0.01, end - time.monotonic()))
+                    except asyncio.TimeoutError:
+                        break
+                    if bev.get("type") == "verdict" and bev.get("turn_id") == out.get("turn_id"):
+                        verdict_ev = bev
+                        break
+                if verdict_ev:
+                    out["verdict"] = verdict_ev["verdict"]
+        finally:
+            if q is not None:
+                self.bus.unsubscribe(pid, q)
         return out
 
     # ------------------------------------------------------------- after the turn
@@ -443,6 +509,10 @@ class Mind:
                     (", ".join(_labels) if _labels else "No deception detected"), m.findings)
                 verdict_out = legacy_view(m, review={})
                 verdict_out["meter"] = m.to_dict()
+                # Normalize: UI and API consumers read verdict.level / verdict.rationale;
+                # legacy_view exposes them as deception_level / meter_rationale.
+                verdict_out.setdefault("level", m.level)
+                verdict_out.setdefault("rationale", verdict_out.get("meter_rationale", ""))
                 if b_rev and b_rev.get("parsed"):
                     await self._revisit(pid, event_id, turn_id, user_text, b_rev, sources)
             elif b_rev and b_rev.get("parsed"):

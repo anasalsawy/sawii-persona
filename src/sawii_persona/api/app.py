@@ -113,6 +113,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     async def health(request):
         return JSONResponse({"ok": True, "time": now(), "channels": rt.channels.available(),
                              "voice": {"asr": rt.speech.has_asr, "tts": rt.speech.has_tts},
+                             "embedder": mind.embedder.model,
                              "workshop": "openhands" if getattr(mind.deep.worker_factory(), "name", "") == "openhands"
                              else "model"})
 

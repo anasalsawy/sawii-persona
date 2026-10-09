@@ -94,7 +94,15 @@ class OpenAICompatLLM(LLM):
         return self._client
 
     def _headers(self) -> dict:
-        h = {"Content-Type": "application/json"}
+        # A browser UA is not vanity: Featherless sits behind Cloudflare, and
+        # datacenter egress (Railway) with the default `python-httpx/x.y`
+        # agent gets 403'd with error 1010 on some routes (notably
+        # /embeddings) while others pass. This cost us semantic recall in
+        # production once - do not remove.
+        h = {"Content-Type": "application/json",
+             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+             "Accept": "application/json"}
         if self.endpoint.api_key:
             h["Authorization"] = f"Bearer {self.endpoint.api_key}"
         return h

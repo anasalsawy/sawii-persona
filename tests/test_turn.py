@@ -115,7 +115,11 @@ class TurnTests(MindCase):
         await self.mind.chat(self.pid, "ok")
         system = [c for c in self.mind.a.calls if not c["json_mode"]][-1]["messages"][0]["content"]
         self.assertIn("CORRECTION REQUIRED", system)
-        self.assertIn("recently RED", system)
+        # Since the deception meter became the record of truth, the integrity
+        # block reflects the meter's verdict (the fake B feeds it no grounded
+        # evidence, so it rates GREEN); B's RED still reaches A as a REQUIRED
+        # correction with the rationale carried in the correction itself.
+        self.assertIn("The exam is Friday, not Thursday.", system)
         thoughts = await self.mind.store.all("SELECT source FROM thoughts")
         self.assertIn("correction", [t["source"] for t in thoughts])
 

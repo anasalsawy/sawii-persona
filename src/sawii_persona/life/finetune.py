@@ -161,9 +161,16 @@ class FineTuner:
         return report
 
     async def _run_command(self, path: str) -> tuple[bool, str]:
-        cmd = shlex.split(self.s.finetune_command) + [path]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.STDOUT)
+        if os.name == "nt":
+            # shlex.split is POSIX: it eats Windows path backslashes and
+            # mangles quoted args. The shell handles both correctly.
+            proc = await asyncio.create_subprocess_shell(
+                f'{self.s.finetune_command} "{path}"', stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT)
+        else:
+            cmd = shlex.split(self.s.finetune_command) + [path]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
+                                                        stderr=asyncio.subprocess.STDOUT)
         out, _ = await proc.communicate()
         return proc.returncode == 0, out.decode(errors="replace")[-1000:]
 

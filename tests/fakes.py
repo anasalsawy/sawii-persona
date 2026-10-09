@@ -76,13 +76,21 @@ def make_b(level="GREEN", correction="", afterthought="", *, pick=None, pick_del
         if "remind me" in body:
             loops.append({"op": "open", "kind": "reminder", "text": "check on Maya's exam",
                           "quote": "remind me", "due": "in 1 seconds"})
-        return json.dumps({
+        review = {
             "verdict": {"level": level, "rationale": "fine" if level == "GREEN" else "unsupported claim",
                         "findings": [] if level == "GREEN" else [{"claim": "x", "issue": "unsupported", "evidence": "y"}]},
             "correction_required": correction,
             "collateral": [{"text": "nervous for Maya", "quote": "I'm nervous", "anchor": "Maya exam"}],
             "loops": loops, "conscience": "Ask how they are sleeping.", "afterthought": afterthought,
-            **(extra(body) if extra else {})})
+            **(extra(body) if extra else {})}
+        if level != "GREEN":
+            # Feed the deception meter a ledger it can act on: a claim quoted
+            # from A's scripted reply, marked unsupported. Without this the
+            # meter (the record of truth since 28f9aaf) rates GREEN and the
+            # adjutant's non-GREEN level never reaches the verdicts table.
+            review["claims"] = [{"quote": "I'll remember Friday.", "kind": "COMPLETION",
+                                 "support": "UNSUPPORTED", "evidence_quote": ""}]
+        return json.dumps(review)
     return ScriptedLLM(respond, name="B")
 
 

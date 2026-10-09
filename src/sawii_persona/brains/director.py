@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from ..llm import LLM, ToolCall, strip_reasoning
+from .prompts import PLUGIN_GUIDE
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,11 @@ Rules:
   place - treat it as a correction or extra context from your own thinking, incorporate it in the
   next step, do not restart.
 - Use at most {max_rounds} rounds of tool calls per directive.
+
+Plugin-authoring guide (verbatim from the voice's original manual; consult it
+whenever the directive asks you to build or install a plugin):
+
+""" + PLUGIN_GUIDE + """
 """
 
 
@@ -380,7 +386,9 @@ class Director:
             directive.error = "B has no tools available (gateway did not advertise any)."
             return
         msgs: list[dict] = [
-            {"role": "system", "content": B_SYSTEM.format(max_rounds=MAX_B_ROUNDS)},
+            # .replace, not .format: PLUGIN_GUIDE contains literal braces
+            # (JSON SCHEMA examples) that str.format would eat.
+            {"role": "system", "content": B_SYSTEM.replace("{max_rounds}", str(MAX_B_ROUNDS))},
             {"role": "user", "content": directive.instruction},
         ]
         for round_n in range(MAX_B_ROUNDS):
