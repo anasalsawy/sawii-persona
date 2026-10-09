@@ -207,16 +207,75 @@ async def speak(llm: LLM, messages: list[dict], *, tools: list[dict] | None, run
         msgs.append({"role": "assistant", "content": round_text or None, "tool_calls": [
             {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments or "{}"}}
             for c in calls]})
-        for c in calls:
-            result.tools_used.append(c.name)
+
+        # TALK-WHILE-DOING: kick each tool off as an asyncio Task, then stream a
+        # short filler line to the person while the tools run. The dual-lobe
+        # design is literally built for this - A keeps the voice; the tool
+        # runs on a parallel task. Single-model agents (ChatGPT, Hermes) stall
+        # here because they have one thread; we don't.
+        async def _one_tool(call):
+            result.tools_used.append(call.name)
             try:
-                out = await run_tool(c)
+                return call, await run_tool(call)
             except Exception as exc:  # noqa: BLE001
-                out = json.dumps({"error": str(exc)[:200]})
+                return call, json.dumps({"error": str(exc)[:200]})
+
+        tool_tasks = [asyncio.create_task(_one_tool(c)) for c in calls]
+
+        # Short filler stream - the model acknowledges what it's doing without
+        # waiting on the tool. Capped at a few tokens so it's a line, not a
+        # paragraph. Cuts short the moment every tool resolves.
+        filler_names = ", ".join(c.name for c in calls)
+        filler_system = {
+            "role": "system",
+            "content": (
+                "You just chose to use these tools: " + filler_names + ". While they run, "
+                "say ONE short natural line to the user acknowledging what you're doing "
+                "(e.g. 'one sec, let me check', 'looking at that now'). Under 12 words. "
+                "Do not pretend you have the result yet. Do not say the tool names out "
+                "loud. No feel suffix. Keep it in the same voice as the rest of your reply."
+            ),
+        }
+        filler_feel = FeelFilter()
+        try:
+            filler_stream = llm.stream(
+                msgs + [filler_system],
+                tools=None, temperature=0.7, max_tokens=40,
+                **({"model": model} if model else {}),
+            )
+            emitted_any = False
+            try:
+                async for ev in filler_stream:
+                    if ev["type"] == "text":
+                        visible = filler_feel.feed(ev["text"])
+                        if visible:
+                            emitted_any = True
+                            result.text += visible
+                            yield visible
+                            if on_text is not None:
+                                on_text(result.text)
+                    if all(t.done() for t in tool_tasks):
+                        break
+            finally:
+                await filler_stream.aclose()
+            flush_tail = filler_feel.flush()
+            if flush_tail:
+                result.text += flush_tail
+                yield flush_tail
+                emitted_any = True
+            if emitted_any and not result.text.endswith((" ", "\n")):
+                result.text += " "
+                yield " "
+        except Exception as exc:  # noqa: BLE001
+            # Filler is a nicety, not load-bearing. If it fails, A still gets
+            # the tool result in the next round - the user just doesn't hear
+            # the "one sec" line. Log and continue.
+            pass
+
+        # Collect tool outputs (likely already resolved while filler streamed)
+        done_pairs = await asyncio.gather(*tool_tasks)
+        for c, out in done_pairs:
             msgs.append({"role": "tool", "tool_call_id": c.id, "content": out})
-        if result.text and not result.text.endswith((" ", "\n")):
-            result.text += " "
-            yield " "
     tail = feel.flush()
     if tail:
         result.text += tail

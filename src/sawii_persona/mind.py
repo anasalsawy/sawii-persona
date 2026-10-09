@@ -222,32 +222,60 @@ class Mind:
                 return out if isinstance(out, str) else json.dumps(data)[:16000]
 
             async def run_tool(call: ToolCall) -> str:
-                yield_tool.append(call.name)
-                if call.name == "fetch_consults":
-                    data = await board.fetch(self.s.consult_wait_ms)
-                    return board.render(data)
-                if call.name == "check_clock":
-                    return json.dumps(clock.snapshot())
-                if call.name == "delegate_task":
-                    task = str(call.args().get("task", "")).strip()
-                    if not task:
-                        return json.dumps({"error": "empty task"})
-                    if self.deep is None:
-                        return json.dumps({"error": "workshop not available"})
-                    job = await self.deep.submit(pid, task)
-                    return json.dumps({"job": job, "status": "started - results will come back to you later"})
-                if call.name == "try_to_remember":
-                    what = str(call.args().get("what", "")).strip()
-                    if not what:
-                        return "Remember what?"
-                    rec = await self.try_to_remember(persona, what, exclude_turn_ids={turn_id})
-                    live_lobes.surfaced(rec)
-                    return rec.text or "Nothing comes back - your adjutant finds nothing in the record about that."
-                if call.name in gateway_names:
-                    return await _call_gateway(call.name, call.args)
-                return json.dumps({"error": f"unknown tool {call.name}"})
+                import time as _time
 
-            yield_tool: list[str] = []
+                try:
+                    args_safe = call.args() if callable(call.args) else {}
+                except Exception:  # noqa: BLE001
+                    args_safe = {}
+                # Trim args before emitting; a filler like {"code": "<huge python>"} would
+                # bloat every chunk otherwise.
+                truncated = {k: (v[:160] + "…" if isinstance(v, str) and len(v) > 160 else v)
+                             for k, v in args_safe.items()}
+                yield_tool.append({"kind": "start", "name": call.name, "id": call.id,
+                                   "args": truncated})
+                start = _time.monotonic()
+                ok = True
+                try:
+                    if call.name == "fetch_consults":
+                        data = await board.fetch(self.s.consult_wait_ms)
+                        out = board.render(data)
+                    elif call.name == "check_clock":
+                        out = json.dumps(clock.snapshot())
+                    elif call.name == "delegate_task":
+                        task = str(call.args().get("task", "")).strip()
+                        if not task:
+                            out = json.dumps({"error": "empty task"})
+                        elif self.deep is None:
+                            out = json.dumps({"error": "workshop not available"})
+                        else:
+                            job = await self.deep.submit(pid, task)
+                            out = json.dumps({"job": job,
+                                              "status": "started - results will come back to you later"})
+                    elif call.name == "try_to_remember":
+                        what = str(call.args().get("what", "")).strip()
+                        if not what:
+                            out = "Remember what?"
+                        else:
+                            rec = await self.try_to_remember(persona, what,
+                                                              exclude_turn_ids={turn_id})
+                            live_lobes.surfaced(rec)
+                            out = rec.text or ("Nothing comes back - your adjutant finds nothing "
+                                               "in the record about that.")
+                    elif call.name in gateway_names:
+                        out = await _call_gateway(call.name, call.args)
+                    else:
+                        out = json.dumps({"error": f"unknown tool {call.name}"})
+                except BaseException:  # noqa: BLE001
+                    ok = False
+                    raise
+                finally:
+                    ms = int((_time.monotonic() - start) * 1000)
+                    yield_tool.append({"kind": "done", "name": call.name, "id": call.id,
+                                       "ok": ok, "ms": ms})
+                return out
+
+            yield_tool: list[dict] = []
             use_tools = self.s.a_tools if tools is None else tools
             offered = [t for t in A_TOOLS if (t["function"]["name"] != "fetch_consults" or self.consultants)
                        and (t["function"]["name"] != "delegate_task" or self.deep is not None)]
@@ -264,7 +292,17 @@ class Mind:
                                          result=result, model=self.a_model_for(persona), inner=inner,
                                          on_text=live_lobes.on_text):
                     while yield_tool:
-                        yield {"type": "tool", "name": yield_tool.pop(0)}
+                        ev = yield_tool.pop(0)
+                        kind = ev.get("kind", "")
+                        if kind == "start":
+                            yield {"type": "tool_start", "name": ev["name"], "id": ev["id"],
+                                   "args": ev.get("args", {})}
+                        elif kind == "done":
+                            yield {"type": "tool_done", "name": ev["name"], "id": ev["id"],
+                                   "ok": ev.get("ok", True), "ms": ev.get("ms", 0)}
+                        else:
+                            # legacy shape (string); keep for safety
+                            yield {"type": "tool", "name": str(ev)}
                     while heard < len(result.heard):
                         yield {"type": "inner", "from": result.heard[heard]["from"],
                                "kind": result.heard[heard]["kind"]}

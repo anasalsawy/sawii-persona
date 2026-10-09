@@ -187,6 +187,13 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
                                  "model": "sawii-persona",
                                  "choices": [{"index": 0, "delta": {"content": ev["text"]}, "finish_reason": None}]}
                         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    elif ev["type"] in ("tool_start", "tool_done"):
+                        # Live tool chip events (sawii-only extension; OpenAI clients
+                        # ignore unknown chunk fields).
+                        chunk = {"id": cid, "object": "chat.completion.chunk", "created": created,
+                                 "model": "sawii-persona", "sawii_tool": ev,
+                                 "choices": [{"index": 0, "delta": {}, "finish_reason": None}]}
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                     elif ev["type"] == "done":
                         extra = {}
                         if "verdict" in ev:
