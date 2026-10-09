@@ -89,6 +89,7 @@ class _State:
     current: Optional[_Directive] = None
     history: list[_Directive] = field(default_factory=list)
     cancel_requested: bool = False
+    active_tool_call_id: str = ""     # set while a tool is running on the gateway
 
 
 class Director:
@@ -156,9 +157,17 @@ class Director:
     def nudge(self, pid: int, note: str) -> dict:
         """Inject a mid-work note into the running directive.
 
-        The lane sees the note at the next round and incorporates it. If no
-        job is running, the note is appended to whatever directive runs next
-        from the queue; if the queue is empty too, nothing happens.
+        Two delivery paths, both fire together:
+          - Round-level: appended to pending_notes, which the lane folds in
+            at the top of the next LLM round (between tool calls).
+          - Live-whisper: if a specific tool call is running RIGHT NOW on
+            the gateway, the note is POSTed to the gateway's
+            /api/internal/tool/notes endpoint so the plugin's ctx.listen()
+            receives it immediately. This is the inter-lobular channel -
+            A→B whispers mid-call without stopping B.
+
+        If no job is running the note is attached to whatever directive
+        runs next; if the queue is empty too, nothing happens.
         """
         note = (note or "").strip()
         if not note:
@@ -169,11 +178,36 @@ class Director:
         if state.current is not None:
             state.current.pending_notes.append(note)
             self.bus.publish(pid, {"type": "b_nudge", "job": state.current.id, "note": note})
-            return {"ok": True, "attached_to": state.current.id}
+            # Fire the live-whisper if a tool is currently executing.
+            if state.active_tool_call_id:
+                asyncio.create_task(self._whisper(pid, state.active_tool_call_id, note),
+                                    name=f"whisper-{state.current.id}")
+            return {"ok": True, "attached_to": state.current.id,
+                    "live": bool(state.active_tool_call_id)}
         if state.queue._queue:  # type: ignore[attr-defined]
             state.queue._queue[-1].pending_notes.append(note)  # type: ignore[attr-defined]
             return {"ok": True, "attached_to_queued": True}
         return {"ok": False, "reason": "nothing is working right now"}
+
+    async def _whisper(self, pid: int, tool_call_id: str, note: str) -> None:
+        """Push a coaching note to the gateway's running plugin via the
+        /api/internal/tool/notes endpoint. Best-effort; failure just means
+        the live-whisper did not land - the pending_notes path still folds
+        the note in at the next round."""
+        creds = self._creds.get(pid) or {}
+        webhook = creds.get("webhook") or {}
+        url = (webhook.get("url") or "").rstrip("/")
+        secret = webhook.get("secret") or ""
+        if not url or not secret:
+            return
+        notes_url = url + "/notes"
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(notes_url, json={"tool_call_id": tool_call_id, "note": note},
+                                  headers={"X-Internal-Secret": secret})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("whisper failed: %s", exc)
 
     def shutdown_persona(self, pid: int) -> None:
         state = self._states.get(pid)
@@ -314,12 +348,15 @@ class Director:
                 })
                 started = time.monotonic()
                 ok = True
+                state.active_tool_call_id = call.id  # live-whisper routing target
                 try:
                     out = await self._run_tool_via_webhook(state.persona_id, call.name, args_safe,
                                                            job_id=directive.id, tool_id=call.id)
                 except Exception as exc:  # noqa: BLE001
                     out = json.dumps({"error": f"{type(exc).__name__}: {exc}"[:200]})
                     ok = False
+                finally:
+                    state.active_tool_call_id = ""
                 ms = int((time.monotonic() - started) * 1000)
                 self.bus.publish(state.persona_id, {
                     "type": "b_tool_done", "job": directive.id,
@@ -343,7 +380,8 @@ class Director:
         if not url or not secret or not persona_key:
             return json.dumps({"error": "B has no webhook credentials"})
         import httpx  # local import: tests run without the httpx dep
-        body = {"persona_key": persona_key, "tool": name, "args": args}
+        body = {"persona_key": persona_key, "tool": name, "args": args,
+                "tool_call_id": tool_id}
         headers = {"X-Internal-Secret": secret, "Accept": "text/event-stream"}
         chunks: list[str] = []
         final_output: str = ""
