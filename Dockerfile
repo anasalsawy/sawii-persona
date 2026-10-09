@@ -5,6 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY prompts ./prompts
 # Install core deps. The [deep] extra pulls openhands-sdk so B has shell + file-editor hands in the
 # workshop; if pip can't resolve it the core install still succeeds and the deep lane falls back
 # to LLMWorker (B still plans and critiques, just no terminal access).

@@ -28,7 +28,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "serve":
         import uvicorn
+        from . import bootstrap
         from .api.app import create_app
+        # Bootstrap a persona from SAWII_BOOTSTRAP_FROM when the store is empty.
+        # Idempotent: does nothing when any persona already exists.
+        try:
+            bootstrap.run()
+        except Exception as exc:  # noqa: BLE001 - a bootstrap failure must not block the server
+            logging.getLogger(__name__).warning("bootstrap failed: %s", exc)
         uvicorn.run(create_app(), host=args.host, port=args.port, log_level="info",
                     access_log=False)  # keys can travel in ?key= (EventSource); never log them
     elif args.cmd == "create-persona":

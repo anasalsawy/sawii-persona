@@ -45,6 +45,14 @@ stand-ins; not yet run end-to-end against the real hosted models (see [§27 Hone
 27. [Honest status](#27-honest-status)
 28. [Tests](#28-tests)
 29. [Security and privacy](#29-security-and-privacy)
+30. [Worked example: one turn, every lobe](#30-worked-example-one-turn-every-lobe)
+31. [Parallel orchestration at message arrival](#31-parallel-orchestration-at-message-arrival)
+32. [Memory relationships (ER-style)](#32-memory-relationships-er-style)
+33. [Recall scoring in detail](#33-recall-scoring-in-detail)
+34. [Consultants + fetch_consults in detail](#34-consultants--fetch_consults-in-detail)
+35. [Supersession and reconsolidation, drawn](#35-supersession-and-reconsolidation-drawn)
+36. [The inner-voice interrupt, byte-level](#36-the-inner-voice-interrupt-byte-level)
+37. [Failure modes and what the system does about them](#37-failure-modes-and-what-the-system-does-about-them)
 
 ---
 
