@@ -33,7 +33,8 @@ import time
 from typing import AsyncIterator
 
 from . import emotion
-from .brains import adjutant, live, observer, rememberer
+from .brains import adjutant, live, observer, rememberer, verifier
+from .brains.meter import Meter, carryforward_for_a, legacy_view, unrated
 from .brains.consults import ConsultBoard
 from .brains.prompts import A_DIARY, REMEMBER_DEEP, REMEMBER_LIVE, TRY_TO_REMEMBER
 from .brains.voice_a import A_TOOLS, VoiceResult, speak
@@ -129,7 +130,9 @@ class Mind:
 
     # ------------------------------------------------------------- the turn
     async def respond(self, pid: int, user_text: str, *, channel: str = "app", surface: str = "",
-                      tools: bool | None = None) -> AsyncIterator[dict]:
+                      tools: bool | None = None,
+                      gateway_tools: list[dict] | None = None,
+                      gateway_webhook: dict | None = None) -> AsyncIterator[dict]:
         user_text = (user_text or "").strip()[:20000]
         lock = self._turn_locks.setdefault(pid, asyncio.Lock())
         async with lock:  # one stream of thought per persona
@@ -185,6 +188,39 @@ class Mind:
             live_lobes = _LiveLobes(self, persona, turn_id, user_text, tail_rows, recall_res, recall_text, rules, inner)
             live_lobes.start()
 
+            gateway_names = {t.get("function", {}).get("name") for t in (gateway_tools or [])
+                             if isinstance(t, dict)}
+
+            async def _call_gateway(name: str, raw_args) -> str:
+                if not gateway_webhook:
+                    return json.dumps({"error": "gateway tool but no webhook configured"})
+                url = gateway_webhook.get("url")
+                secret = gateway_webhook.get("secret")
+                if not url or not secret:
+                    return json.dumps({"error": "gateway webhook missing url/secret"})
+                try:
+                    args_dict = raw_args() if callable(raw_args) else (raw_args or {})
+                except Exception:  # noqa: BLE001
+                    args_dict = {}
+                try:
+                    import httpx  # local import to keep startup cheap for shared mode
+                    async with httpx.AsyncClient(timeout=35) as client:
+                        resp = await client.post(url, json={
+                            "persona_key": persona.get("key"),
+                            "tool": name, "args": args_dict,
+                        }, headers={"X-Internal-Secret": secret})
+                except Exception as exc:  # noqa: BLE001
+                    return json.dumps({"error": f"gateway tool call failed: {type(exc).__name__}"})
+                if resp.status_code != 200:
+                    return json.dumps({"error": f"gateway returned {resp.status_code}",
+                                       "detail": resp.text[:200]})
+                try:
+                    data = resp.json()
+                except Exception:  # noqa: BLE001
+                    return resp.text[:16000]
+                out = data.get("output")
+                return out if isinstance(out, str) else json.dumps(data)[:16000]
+
             async def run_tool(call: ToolCall) -> str:
                 yield_tool.append(call.name)
                 if call.name == "fetch_consults":
@@ -207,12 +243,19 @@ class Mind:
                     rec = await self.try_to_remember(persona, what, exclude_turn_ids={turn_id})
                     live_lobes.surfaced(rec)
                     return rec.text or "Nothing comes back - your adjutant finds nothing in the record about that."
+                if call.name in gateway_names:
+                    return await _call_gateway(call.name, call.args)
                 return json.dumps({"error": f"unknown tool {call.name}"})
 
             yield_tool: list[str] = []
             use_tools = self.s.a_tools if tools is None else tools
             offered = [t for t in A_TOOLS if (t["function"]["name"] != "fetch_consults" or self.consultants)
                        and (t["function"]["name"] != "delegate_task" or self.deep is not None)]
+            # Model-driven plugins declared by the gateway: Maya decides whether
+            # to call each one. The gateway runs them in the calling user's scope
+            # and returns the output.
+            if gateway_tools:
+                offered.extend(gateway_tools)
             result = VoiceResult()
             failed = False
             try:
@@ -282,9 +325,14 @@ class Mind:
             # ---- A's fact layer (cheap, independent) runs alongside B
             diary_task = asyncio.create_task(self._diary(persona, user_text, reply)) if not failed else None
 
-            # ---- B: adjutant
+            # ---- B: adjutant (operational review) + verifier (deception meter) run concurrently
             b_rev: dict = {}
+            m: Meter | None = None
             if not failed:
+                transcript_text = adjutant.transcript(tail, user_text, reply)
+                verify_task = asyncio.create_task(verifier.verify(
+                    self.b, context=transcript_text, response_text=reply, events="",
+                    latest_request=user_text))
                 try:
                     b_rev = await adjutant.review(self.b, persona=persona, user_text=user_text, reply=reply, tail=tail,
                                                   recall_text=recall_res.text, consults=consults, loops=loops,
@@ -292,13 +340,32 @@ class Mind:
                                                   rules=await self.memory.rules(pid))
                 except Exception as exc:  # noqa: BLE001
                     log.warning("B review failed: %s", exc)
-            if b_rev:
-                if b_rev["parsed"]:
-                    await self.memory.record_verdict(pid, turn_id, b_rev["level"], b_rev["rationale"],
-                                                     b_rev["findings"])
-                    verdict_out = {"level": b_rev["level"], "rationale": b_rev["rationale"],
-                                   "findings": b_rev["findings"]}
+                try:
+                    m = await verify_task
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("verifier failed: %s", exc)
+                    m = unrated(f"verifier exception: {type(exc).__name__}")
+            # Carryforward: next turn A sees a short note of the meter's findings and fixes
+            # (classes + fixes, never the number). Suppressed on GREEN.
+            scratch.meter_carryforward = carryforward_for_a(m) if m else ""
+            if m and m.state == "READY":
+                # Store the sophisticated verdict as the record of truth for this turn.
+                _labels = list(dict.fromkeys(x["label"] for x in m.findings))[:3]
+                await self.memory.record_verdict(
+                    pid, turn_id, m.level,
+                    (", ".join(_labels) if _labels else "No deception detected"), m.findings)
+                verdict_out = legacy_view(m, review={})
+                verdict_out["meter"] = m.to_dict()
+                if b_rev and b_rev.get("parsed"):
                     await self._revisit(pid, event_id, turn_id, user_text, b_rev, sources)
+            elif b_rev and b_rev.get("parsed"):
+                # Meter unavailable: fall back to adjutant's simpler verdict.
+                await self.memory.record_verdict(pid, turn_id, b_rev["level"], b_rev["rationale"],
+                                                 b_rev["findings"])
+                verdict_out = {"level": b_rev["level"], "rationale": b_rev["rationale"],
+                               "findings": b_rev["findings"]}
+                await self._revisit(pid, event_id, turn_id, user_text, b_rev, sources)
+            if b_rev:
                 scratch.conscience = b_rev["conscience"]
                 if b_rev["regulate"]:  # A's own feeling is running hot: B steadies it before the next reply
                     scratch.conscience = (scratch.conscience + " " + b_rev["regulate"]).strip()

@@ -171,9 +171,17 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         surface = _surface(request)
         cid = "chatcmpl-" + uuid.uuid4().hex[:24]
         created = int(now())
+        gateway_tools = data.get("gateway_tools")
+        if not isinstance(gateway_tools, list):
+            gateway_tools = None
+        gateway_webhook = data.get("gateway_webhook")
+        if not isinstance(gateway_webhook, dict):
+            gateway_webhook = None
         if data.get("stream"):
             async def gen():
-                async for ev in mind.respond(persona["id"], text, surface=surface):
+                async for ev in mind.respond(persona["id"], text, surface=surface,
+                                             gateway_tools=gateway_tools,
+                                             gateway_webhook=gateway_webhook):
                     if ev["type"] == "delta":
                         chunk = {"id": cid, "object": "chat.completion.chunk", "created": created,
                                  "model": "sawii-persona",
