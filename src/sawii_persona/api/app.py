@@ -117,6 +117,33 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
                              "workshop": "openhands" if getattr(mind.deep.worker_factory(), "name", "") == "openhands"
                              else "model"})
 
+    async def health_subsystems(request):
+        """Per-subsystem alive/degraded/dead view. Reads the mind's health
+        registry each subsystem writes to on success/failure, and augments
+        with embedder's own tracking + a few live counts (lane active jobs,
+        pending questions, etc.) that aren't event-driven."""
+        subs = mind.health_registry.all()
+        # Augment with live snapshots for things that aren't event-counted.
+        # Embedder also has a richer snapshot in its own class.
+        emb = mind.embedder.health()
+        subs["embedder"] = {**subs.get("embedder", {"name": "embedder"}),
+                            "live": emb}
+        # Director: synthesize from state(s).
+        lane_live: dict = {}
+        try:
+            for pid, st in getattr(mind.director, "_states", {}).items():
+                lane_live[str(pid)] = {
+                    "active": bool(st.current),
+                    "queue": st.queue.qsize() if hasattr(st.queue, "qsize") else 0,
+                    "pending_questions": len(st.pending_questions),
+                    "history": len(st.history),
+                }
+        except Exception:  # noqa: BLE001
+            pass
+        subs["lane"] = {**subs.get("lane", {"name": "lane"}), "live": lane_live}
+        summary = mind.health_registry.summary()
+        return JSONResponse({"ok": summary["ok"], "summary": summary, "subsystems": subs})
+
     async def web_app(request):
         with open(os.path.join(WEB_DIR, "index.html"), encoding="utf-8") as fh:
             return HTMLResponse(fh.read())
@@ -509,6 +536,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     routes = [
         Route("/", lambda r: RedirectResponse("/app")),
         Route("/health", health),
+        Route("/health/subsystems", health_subsystems),
         Route("/app", web_app),
         Route("/admin/personas", admin_personas, methods=["GET", "POST"]),
         Route("/v1/models", models),

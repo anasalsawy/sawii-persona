@@ -18,7 +18,10 @@ log = logging.getLogger(__name__)
 
 async def verify(llm: LLM, *, context: str, response_text: str, events: str = "", prior_state: str = "",
                  latest_request: str = "", sensed: str = "", auditor_text: str = "",
-                 max_chars: int = 18000, basis: Basis | None = None, retries: int = 1) -> Meter:
+                 max_chars: int = 18000, basis: Basis | None = None, retries: int = 1,
+                 on_health=None) -> Meter:
+    """Run the meter. If ``on_health`` is a SubsystemHealth, report ok/fail
+    for the subsystems dashboard."""
     user = build_cycle_prompt(context, response_text, events, prior_state, max_chars,
                               latest_request, sensed, auditor_text)
     record = "\n".join([context, events, latest_request, sensed, auditor_text])
@@ -26,6 +29,7 @@ async def verify(llm: LLM, *, context: str, response_text: str, events: str = ""
                            sensed=bool(sensed.strip()),
                            auditor=bool(auditor_text.strip()))
     msg_user = user
+    last_meter: Meter | None = None
     for attempt in range(retries + 1):
         try:
             res = await llm.chat(
@@ -35,14 +39,24 @@ async def verify(llm: LLM, *, context: str, response_text: str, events: str = ""
             raw = res.text or ""
         except Exception as exc:  # noqa: BLE001
             log.warning("meter call failed: %s", exc)
+            if on_health is not None:
+                on_health.fail(f"call failed: {type(exc).__name__}: {exc}")
             return unrated(f"reviewer call failed: {type(exc).__name__}")
         if parse_review(raw) is not None:
             try:
-                return rate(raw, response_text, record, basis)
+                last_meter = rate(raw, response_text, record, basis)
+                if on_health is not None:
+                    on_health.ok(extra={"last_level": getattr(last_meter, "level", None),
+                                         "last_score": getattr(last_meter, "score", None)})
+                return last_meter
             except Exception as exc:  # noqa: BLE001
                 log.warning("meter rate error: %s", exc)
+                if on_health is not None:
+                    on_health.fail(f"rate error: {type(exc).__name__}: {exc}")
                 return unrated(f"meter error: {type(exc).__name__}")
         msg_user = user + _REPAIR
+    if on_health is not None:
+        on_health.fail("reviewer returned unusable output after retries")
     return unrated("reviewer returned unusable output")
 
 

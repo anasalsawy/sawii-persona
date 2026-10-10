@@ -80,12 +80,29 @@ def cosine_matrix(query: np.ndarray, matrix: np.ndarray) -> np.ndarray:
 
 
 class Embedder:
-    """Remote semantic embedder with honest local fallback."""
+    """Remote semantic embedder with honest local fallback.
+
+    Tracks last success / fallback times and the recent failure reason so
+    /health/subsystems can tell at a glance whether semantic recall is live
+    or we're degrading to hash matching.
+    """
 
     def __init__(self, llm=None, *, timeout: float = 8.0):
+        import time as _time
         self.llm = llm
         self.timeout = timeout
         self._remote_ok = llm is not None
+        self._last_success_at: float | None = None
+        self._last_fallback_at: float | None = None
+        self._last_error: str = ""
+        self._success_count: int = 0
+        self._fallback_count: int = 0
+        self._time = _time
+        # Set by Mind at construction time so each embed call reports health
+        # into the central subsystems registry. Optional — the standalone
+        # tracking fields above remain for callers that don't use the
+        # registry.
+        self.on_health = None  # type: ignore[assignment]
 
     @property
     def model(self) -> str:
@@ -93,16 +110,50 @@ class Embedder:
             return getattr(self.llm, "model", "remote")
         return HASH_MODEL
 
+    def health(self) -> dict:
+        """Snapshot of the embedder's live state for the subsystems endpoint."""
+        now_mono = self._time.monotonic()
+        return {
+            "model": getattr(self.llm, "model", None) if self.llm else None,
+            "live_model": self.model,
+            "is_fallback": self.model == HASH_MODEL,
+            "last_success_at": self._last_success_at,
+            "last_fallback_at": self._last_fallback_at,
+            "age_since_success_s": (now_mono - self._last_success_at) if self._last_success_at else None,
+            "age_since_fallback_s": (now_mono - self._last_fallback_at) if self._last_fallback_at else None,
+            "success_count": self._success_count,
+            "fallback_count": self._fallback_count,
+            "last_error": self._last_error[:200],
+            "remote_configured": self.llm is not None,
+        }
+
     async def embed(self, texts: list[str]) -> tuple[str, list[list[float]]]:
         texts = [t[:8000] for t in texts]
+        model_name = getattr(self.llm, "model", "remote") if self.llm else None
         if self.llm is not None:
             try:
                 vecs = await asyncio.wait_for(self.llm.embed(texts), self.timeout)
                 if vecs and len(vecs) == len(texts):
                     self._remote_ok = True
-                    return getattr(self.llm, "model", "remote"), vecs
+                    self._last_success_at = self._time.monotonic()
+                    self._success_count += 1
+                    self._last_error = ""
+                    if self.on_health is not None:
+                        self.on_health.ok(extra={"model": model_name, "live_model": model_name})
+                    return model_name, vecs
             except Exception as exc:  # outage: degrade, never block a turn
                 log.warning("embedder fallback to local hash: %s", exc)
+                self._last_error = f"{type(exc).__name__}: {exc}"
+                if self.on_health is not None:
+                    self.on_health.fail(f"{type(exc).__name__}: {exc}",
+                                         extra={"model": model_name, "live_model": HASH_MODEL,
+                                                "is_fallback": True})
+        self._last_fallback_at = self._time.monotonic()
+        self._fallback_count += 1
+        if self.on_health is not None and self.llm is None:
+            # No remote configured at all — not an error, just baseline hash mode.
+            self.on_health.extra.update({"model": None, "live_model": HASH_MODEL,
+                                          "is_fallback": True, "remote_configured": False})
         return HASH_MODEL, [hash_embed(t) for t in texts]
 
     async def embed_one(self, text: str) -> tuple[str, list[float]]:

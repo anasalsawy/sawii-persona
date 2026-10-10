@@ -87,9 +87,14 @@ class Mind:
         self.a: LLM = llms.get("a") or OpenAICompatLLM(settings.a, name="A")
         self.b: LLM = llms.get("b") or OpenAICompatLLM(settings.b, name="B")
         self.c: LLM = llms.get("c") or OpenAICompatLLM(settings.c, name="C")
+        # Health registry is created early so subsystems can wire into it as
+        # they're constructed below.
+        from .subsystems import Registry
+        self.health_registry = Registry()
         embed_llm = llms["embed"] if "embed" in llms else (
             OpenAICompatLLM(settings.embed, name="embed") if settings.embed.api_key else None)
         self.embedder = Embedder(embed_llm)
+        self.embedder.on_health = self.health_registry.get("embedder")  # see embedder.py
         if "consultants" in llms:
             self.consultants: dict[str, LLM] = llms["consultants"]
         else:
@@ -485,7 +490,8 @@ class Mind:
                 transcript_text = adjutant.transcript(tail, user_text, reply)
                 verify_task = asyncio.create_task(verifier.verify(
                     self.b, context=transcript_text, response_text=reply, events="",
-                    latest_request=user_text))
+                    latest_request=user_text,
+                    on_health=self.health_registry.get("verifier")))
                 try:
                     b_rev = await adjutant.review(self.b, persona=persona, user_text=user_text, reply=reply, tail=tail,
                                                   recall_text=recall_res.text, consults=consults, loops=loops,
