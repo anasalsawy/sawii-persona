@@ -185,15 +185,16 @@ async def speak(llm: LLM, messages: list[dict], *, tools: list[dict] | None, run
                 result: VoiceResult, max_rounds: int = 4, model: str | None = None,
                 temperature: float = 0.8, inner: "asyncio.Queue | None" = None,
                 on_text: Callable[[str], None] | None = None, max_interruptions: int = 3,
-                max_tokens: int = 4096) -> AsyncIterator[str]:
+                max_tokens: int | None = None) -> AsyncIterator[str]:
     """Stream A's answer, executing tool calls between rounds. Yields visible text.
 
     ``inner`` is the inner-voice queue the other lobes write into while A speaks. When it holds
     something and A has just finished a sentence, A's stream is stopped there, A hears the note, and
     continues the same reply. ``on_text`` sees the visible text so far after every piece.
 
-    A speaks as long as A has something to say. The ``max_tokens`` ceiling here is a safety
-    net (model-level maximum, not a conversational cap) — never a terseness instruction.
+    A speaks as long as A has something to say. ``max_tokens=None`` is the default and sends
+    no cap to the provider — the model's own context ceiling applies. Pass an int only if you
+    explicitly want to truncate.
     """
     msgs = list(messages)
     feel = FeelFilter()

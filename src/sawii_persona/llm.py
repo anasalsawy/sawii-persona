@@ -140,9 +140,13 @@ class OpenAICompatLLM(LLM):
             "model": model or self.endpoint.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
             "stream": stream,
         }
+        # ``max_tokens`` is optional at the wire level: pass None and the body
+        # omits it, letting the provider's own ceiling (model context window)
+        # apply. Callers that want a cap pass an int.
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = tools
         if json_mode:
