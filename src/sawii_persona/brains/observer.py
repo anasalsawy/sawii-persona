@@ -12,6 +12,24 @@ from .adjutant import transcript
 from .prompts import C_SYSTEM
 
 
+def _parse_architect_proposal(raw) -> dict:
+    """Parse the architect_proposal field from C's response.
+
+    C may return either a structured object (target + rationale + expected)
+    or a free-text description. We accept both. Returns an empty dict when
+    C is not in architect mode (live observation turns).
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {
+            "target": str(raw.get("target", "") or "").strip()[:200],
+            "rationale": str(raw.get("rationale", "") or "").strip()[:600],
+            "expected_impact": str(raw.get("expected_impact", "") or "").strip()[:300],
+        }
+    return {"raw": str(raw).strip()[:800]}
+
+
 async def observe(llm: LLM, *, persona: dict, user_text: str, reply: str, tail: list[dict], b_review: dict,
                   hypotheses: list[dict], recalled: list[dict], effective_conf) -> dict:
     parts = []
@@ -47,5 +65,12 @@ async def observe(llm: LLM, *, persona: dict, user_text: str, reply: str, tail: 
         "brief_for_b": str(data.get("brief_for_b", "") or "").strip()[:800],
         "expect": str(data.get("expect", "") or "").strip()[:300],
         "disagree_with_b": str(data.get("disagree_with_b", "") or "").strip()[:400],
+        # C's three additional roles. All three are harvested here even when
+        # C is in pure observer mode (no idle-hour pass running); in that
+        # case harmony_notes may be empty and humanize_proposal is the live
+        # turn-by-turn observation of the humanization gap.
+        "harmony_notes": lst("harmony_notes", 4),
+        "humanize_proposal": str(data.get("humanize_proposal", "") or "").strip()[:600],
+        "architect_proposal": _parse_architect_proposal(data.get("architect_proposal")),
         "parsed": bool(data),
     }
