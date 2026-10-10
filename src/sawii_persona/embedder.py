@@ -87,7 +87,7 @@ class Embedder:
     or we're degrading to hash matching.
     """
 
-    def __init__(self, llm=None, *, timeout: float = 8.0):
+    def __init__(self, llm=None, *, timeout: float = 15.0):
         import time as _time
         self.llm = llm
         self.timeout = timeout

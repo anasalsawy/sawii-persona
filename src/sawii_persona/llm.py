@@ -56,9 +56,16 @@ def strip_reasoning(text: str) -> str:
 
 
 class LLM:
-    """Base interface."""
+    """Base interface.
+
+    ``on_health`` is an optional :class:`subsystems.SubsystemHealth` the LLM
+    reports to on every call: :meth:`ok` on a successful response, :meth:`fail`
+    with the exception text otherwise. Wiring is done at Mind construction so
+    each lobe's calls land on their own named subsystem (a_llm, b_llm, c_llm).
+    """
 
     name: str = "llm"
+    on_health = None  # type: ignore[assignment]
 
     async def chat(self, messages: list[dict], *, tools: list[dict] | None = None,
                    temperature: float = 0.7, max_tokens: int = 1024,
@@ -90,19 +97,39 @@ class OpenAICompatLLM(LLM):
 
     def _http(self) -> "httpx.AsyncClient":
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.endpoint.timeout)
+            # HTTP/2 so Cloudflare sees a modern-browser TLS/ALPN fingerprint
+            # alongside the browser headers. If h2 isn't installed, httpx
+            # silently falls back to HTTP/1.1, which still passes with the
+            # richer headers in _headers().
+            try:
+                self._client = httpx.AsyncClient(timeout=self.endpoint.timeout, http2=True)
+            except Exception:  # noqa: BLE001
+                self._client = httpx.AsyncClient(timeout=self.endpoint.timeout)
         return self._client
 
     def _headers(self) -> dict:
-        # A browser UA is not vanity: Featherless sits behind Cloudflare, and
-        # datacenter egress (Railway) with the default `python-httpx/x.y`
-        # agent gets 403'd with error 1010 on some routes (notably
-        # /embeddings) while others pass. This cost us semantic recall in
-        # production once - do not remove.
-        h = {"Content-Type": "application/json",
-             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-             "Accept": "application/json"}
+        # Full browser-shaped headers, not vanity: Featherless sits behind
+        # Cloudflare, and datacenter egress (Railway) with the default
+        # `python-httpx/x.y` agent gets 403'd with error 1010 on /embeddings
+        # even when /chat/completions passes. Cloudflare looks at the whole
+        # header fingerprint (UA + Accept-Language + sec-ch-ua + Sec-Fetch-*),
+        # not UA alone. These together get us through its bot score. This
+        # cost us semantic recall in production — do not remove.
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "sec-ch-ua": '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Origin": "https://featherless.ai",
+            "Referer": "https://featherless.ai/",
+        }
         if self.endpoint.api_key:
             h["Authorization"] = f"Bearer {self.endpoint.api_key}"
         return h
@@ -125,89 +152,130 @@ class OpenAICompatLLM(LLM):
     async def chat(self, messages, *, tools=None, temperature=0.7, max_tokens=1024, json_mode=False,
                    model: str | None = None) -> ChatResult:
         if not self.endpoint.configured:
+            if self.on_health is not None:
+                self.on_health.fail("endpoint not configured")
             raise LLMError(f"{self.name}: endpoint not configured")
         url = f"{self.endpoint.base_url}/chat/completions"
         body = self._body(messages, tools, temperature, max_tokens, stream=False, json_mode=json_mode, model=model)
-        resp = await self._http().post(url, headers=self._headers(), json=body)
-        if resp.status_code == 400 and json_mode:  # provider without response_format support
-            body.pop("response_format", None)
+        try:
             resp = await self._http().post(url, headers=self._headers(), json=body)
-        if resp.status_code >= 400:
-            raise LLMError(f"{self.name}: HTTP {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
+            if resp.status_code == 400 and json_mode:  # provider without response_format support
+                body.pop("response_format", None)
+                resp = await self._http().post(url, headers=self._headers(), json=body)
+            if resp.status_code >= 400:
+                if self.on_health is not None:
+                    self.on_health.fail(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                raise LLMError(f"{self.name}: HTTP {resp.status_code}: {resp.text[:300]}")
+            data = resp.json()
+        except LLMError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if self.on_health is not None:
+                self.on_health.fail(f"{type(exc).__name__}: {exc}")
+            raise
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         calls = [ToolCall(id=c.get("id") or f"call_{i}", name=(c.get("function") or {}).get("name", ""),
                           arguments=(c.get("function") or {}).get("arguments") or "")
                  for i, c in enumerate(msg.get("tool_calls") or [])]
+        if self.on_health is not None:
+            self.on_health.ok(extra={"model": self.endpoint.model})
         return ChatResult(text=strip_reasoning(msg.get("content") or ""), tool_calls=calls,
                           finish_reason=choice.get("finish_reason") or "stop", raw=data)
 
     async def stream(self, messages, *, tools=None, temperature=0.7, max_tokens=1024,
                      model: str | None = None) -> AsyncIterator[dict]:
         if not self.endpoint.configured:
+            if self.on_health is not None:
+                self.on_health.fail("endpoint not configured")
             raise LLMError(f"{self.name}: endpoint not configured")
         url = f"{self.endpoint.base_url}/chat/completions"
         body = self._body(messages, tools, temperature, max_tokens, stream=True, model=model)
         calls: dict[int, ToolCall] = {}
         finish = "stop"
         in_think = False
-        async with self._http().stream("POST", url, headers=self._headers(), json=body) as resp:
-            if resp.status_code >= 400:
-                text = (await resp.aread()).decode(errors="replace")
-                raise LLMError(f"{self.name}: HTTP {resp.status_code}: {text[:300]}")
-            async for line in resp.aiter_lines():
-                line = line.strip()
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if payload == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                choice = (chunk.get("choices") or [{}])[0]
-                delta = choice.get("delta") or {}
-                piece = delta.get("content") or ""
-                if piece:
-                    # drop <think> sections from models that inline reasoning
-                    if "<think>" in piece:
-                        in_think = True
-                        piece = piece.split("<think>", 1)[0]
-                    if in_think:
-                        if "</think>" in piece:
-                            in_think = False
-                            piece = piece.split("</think>", 1)[1]
-                        else:
-                            piece = ""
+        ok = False
+        try:
+            async with self._http().stream("POST", url, headers=self._headers(), json=body) as resp:
+                if resp.status_code >= 400:
+                    text = (await resp.aread()).decode(errors="replace")
+                    if self.on_health is not None:
+                        self.on_health.fail(f"HTTP {resp.status_code}: {text[:200]}")
+                    raise LLMError(f"{self.name}: HTTP {resp.status_code}: {text[:300]}")
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    choice = (chunk.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+                    piece = delta.get("content") or ""
                     if piece:
-                        yield {"type": "text", "text": piece}
-                for tc in delta.get("tool_calls") or []:
-                    idx = tc.get("index", 0)
-                    call = calls.setdefault(idx, ToolCall(id=tc.get("id") or f"call_{idx}", name=""))
-                    fn = tc.get("function") or {}
-                    if tc.get("id"):
-                        call.id = tc["id"]
-                    if fn.get("name"):
-                        call.name += fn["name"]
-                    if fn.get("arguments"):
-                        call.arguments += fn["arguments"]
-                if choice.get("finish_reason"):
-                    finish = choice["finish_reason"]
+                        # drop <think> sections from models that inline reasoning
+                        if "<think>" in piece:
+                            in_think = True
+                            piece = piece.split("<think>", 1)[0]
+                        if in_think:
+                            if "</think>" in piece:
+                                in_think = False
+                                piece = piece.split("</think>", 1)[1]
+                            else:
+                                piece = ""
+                        if piece:
+                            yield {"type": "text", "text": piece}
+                    for tc in delta.get("tool_calls") or []:
+                        idx = tc.get("index", 0)
+                        call = calls.setdefault(idx, ToolCall(id=tc.get("id") or f"call_{idx}", name=""))
+                        fn = tc.get("function") or {}
+                        if tc.get("id"):
+                            call.id = tc["id"]
+                        if fn.get("name"):
+                            call.name += fn["name"]
+                        if fn.get("arguments"):
+                            call.arguments += fn["arguments"]
+                    if choice.get("finish_reason"):
+                        finish = choice["finish_reason"]
+            ok = True
+        except LLMError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if self.on_health is not None:
+                self.on_health.fail(f"stream {type(exc).__name__}: {exc}")
+            raise
+        if ok and self.on_health is not None:
+            self.on_health.ok(extra={"model": self.endpoint.model})
         for idx in sorted(calls):
             yield {"type": "tool_call", "call": calls[idx]}
         yield {"type": "done", "finish_reason": finish}
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not self.endpoint.configured:
+            if self.on_health is not None:
+                self.on_health.fail("endpoint not configured")
             raise LLMError(f"{self.name}: endpoint not configured")
         url = f"{self.endpoint.base_url}/embeddings"
-        resp = await self._http().post(url, headers=self._headers(),
-                                       json={"model": self.endpoint.model, "input": texts})
-        if resp.status_code >= 400:
-            raise LLMError(f"{self.name}: HTTP {resp.status_code}: {resp.text[:300]}")
-        data = sorted(resp.json().get("data", []), key=lambda d: d.get("index", 0))
+        try:
+            resp = await self._http().post(url, headers=self._headers(),
+                                           json={"model": self.endpoint.model, "input": texts})
+            if resp.status_code >= 400:
+                if self.on_health is not None:
+                    self.on_health.fail(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                raise LLMError(f"{self.name}: HTTP {resp.status_code}: {resp.text[:300]}")
+            data = sorted(resp.json().get("data", []), key=lambda d: d.get("index", 0))
+        except LLMError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if self.on_health is not None:
+                self.on_health.fail(f"{type(exc).__name__}: {exc}")
+            raise
+        if self.on_health is not None:
+            self.on_health.ok(extra={"model": self.endpoint.model})
         return [d["embedding"] for d in data]
 
     async def aclose(self) -> None:

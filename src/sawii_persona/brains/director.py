@@ -111,7 +111,8 @@ class Director:
     """Per-persona registry of B workers. Owned by Mind, shared across turns."""
 
     def __init__(self, llm: LLM, bus, *, gateway_tool_schemas_getter: Callable[[], list[dict]] | None = None,
-                 inner_voice_getter: Callable[[int], Optional["asyncio.Queue"]] | None = None):
+                 inner_voice_getter: Callable[[int], Optional["asyncio.Queue"]] | None = None,
+                 on_health=None):
         self.llm = llm
         self.bus = bus
         self._states: dict[int, _State] = {}
@@ -121,6 +122,7 @@ class Director:
         self._creds: dict[int, dict] = {}
         self._schemas_getter = gateway_tool_schemas_getter
         self._inner_getter = inner_voice_getter
+        self.on_health = on_health  # SubsystemHealth or None
 
     # ------------------------------------------------------------ public
     def set_credentials(self, pid: int, persona_key: str, webhook: dict, schemas: list[dict]) -> None:
@@ -427,11 +429,15 @@ class Director:
             except Exception as exc:  # noqa: BLE001
                 directive.error = f"working lane model call failed: {type(exc).__name__}"
                 directive.status = "failed"
+                if self.on_health is not None:
+                    self.on_health.fail(f"B stream failed: {type(exc).__name__}: {exc}")
                 return
             text = strip_reasoning("".join(text_parts)).strip()
             calls = list(calls_dict.values())
             if not calls:
                 directive.summary = text or "(no summary)"
+                if self.on_health is not None:
+                    self.on_health.ok(extra={"rounds": round_n + 1})
                 return
             msgs.append({"role": "assistant", "content": text or None, "tool_calls": [
                 {"id": c.id, "type": "function",

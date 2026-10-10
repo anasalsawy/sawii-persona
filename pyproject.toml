@@ -8,7 +8,7 @@ license = { text = "Proprietary - Copyright (c) Anas AlSawy" }
 dependencies = [
     "starlette>=0.40",
     "uvicorn[standard]>=0.30",
-    "httpx>=0.27",
+    "httpx[http2]>=0.27",
     "pydantic>=2.6",
     "numpy>=1.26",
     "python-multipart>=0.0.9",

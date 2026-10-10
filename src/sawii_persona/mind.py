@@ -91,8 +91,14 @@ class Mind:
         # they're constructed below.
         from .subsystems import Registry
         self.health_registry = Registry()
+        # Every lobe's LLM reports to its own health subsystem.
+        self.a.on_health = self.health_registry.get("a_llm")
+        self.b.on_health = self.health_registry.get("b_llm")
+        self.c.on_health = self.health_registry.get("c_llm")
         embed_llm = llms["embed"] if "embed" in llms else (
             OpenAICompatLLM(settings.embed, name="embed") if settings.embed.api_key else None)
+        if embed_llm is not None:
+            embed_llm.on_health = self.health_registry.get("embedder_llm")
         self.embedder = Embedder(embed_llm)
         self.embedder.on_health = self.health_registry.get("embedder")  # see embedder.py
         if "consultants" in llms:
@@ -101,6 +107,8 @@ class Mind:
             self.consultants = {m.split("/")[-1]: OpenAICompatLLM(
                 ModelEndpoint(settings.consult_base_url, settings.consult_api_key, m, 60), name=m)
                 for m in settings.consult_models}
+        for name, cons in self.consultants.items():
+            cons.on_health = self.health_registry.get(f"consult_{name}")
         self.memory = Memory(self.store, self.embedder)
         self.recall = Recall(self.store, self.memory, self.embedder, band=settings.recall_band,
                              unaddressed_days=settings.unaddressed_days, half_life_days=settings.psyche_half_life_days)
@@ -121,7 +129,8 @@ class Mind:
         # - B's reports then just sit in history until A opens its mouth again.
         self._active_inner: dict[int, "asyncio.Queue"] = {}
         self.director = Director(llm=self.b, bus=self.bus,
-                                 inner_voice_getter=self._active_inner.get)
+                                 inner_voice_getter=self._active_inner.get,
+                                 on_health=self.health_registry.get("director"))
 
     # ------------------------------------------------------------- helpers
     def scratch_for(self, pid: int) -> Scratch:
@@ -168,13 +177,24 @@ class Mind:
                 board.start(user_text)
 
             scratch = self.scratch_for(pid)
-            tail_rows = await self.memory.tail(pid, self.s.tail_turns)
+            recall_h = self.health_registry.get("recall")
+            try:
+                tail_rows = await self.memory.tail(pid, self.s.tail_turns)
+            except Exception as exc:  # noqa: BLE001
+                recall_h.fail(f"tail failed: {type(exc).__name__}: {exc}")
+                raise
             tail_rows = [t for t in tail_rows if t["id"] != turn_id]
-            recall_res, loops, integ = await asyncio.gather(
-                self.recall.recall(persona, user_text, budget=self.s.recall_budget_chars,
-                                   exclude_turn_ids={turn_id}, mood=_blend_moods(persona)),
-                self.memory.open_loops(pid),
-                self.memory.integrity(pid))
+            try:
+                recall_res, loops, integ = await asyncio.gather(
+                    self.recall.recall(persona, user_text, budget=self.s.recall_budget_chars,
+                                       exclude_turn_ids={turn_id}, mood=_blend_moods(persona)),
+                    self.memory.open_loops(pid),
+                    self.memory.integrity(pid))
+                recall_h.ok(extra={"rows": len(getattr(recall_res, "layer_ids", []) or []),
+                                   "budget": self.s.recall_budget_chars})
+            except Exception as exc:  # noqa: BLE001
+                recall_h.fail(f"{type(exc).__name__}: {exc}")
+                raise
             recall_text = recall_res.text
             if self.deep is not None:
                 done_jobs = await self.deep.unseen_results(pid)
@@ -550,6 +570,7 @@ class Mind:
 
             # ---- C: observer (sees B)
             c_obs: dict = {}
+            psyche_h = self.health_registry.get("psyche")
             if not failed:
                 try:
                     recalled = [r for r in await self._layers(pid, recall_res.layer_ids)]
@@ -557,8 +578,17 @@ class Mind:
                         self.c, persona=persona, user_text=user_text, reply=reply, tail=tail, b_review=b_rev,
                         hypotheses=await self.memory.hypotheses(pid), recalled=recalled,
                         effective_conf=lambda h: self.memory.effective_confidence(h, self.s.psyche_half_life_days))
+                    # observe() returns parsed=False if JSON didn't parse. The
+                    # LLM call itself may have succeeded (so a_llm reports ok)
+                    # but C still produced nothing usable - mark psyche
+                    # degraded rather than silently continuing.
+                    if c_obs.get("parsed"):
+                        psyche_h.ok(extra={"chord": c_obs.get("user_chord")})
+                    else:
+                        psyche_h.fail("observer returned unparseable output")
                 except Exception as exc:  # noqa: BLE001
                     log.warning("C observe failed: %s", exc)
+                    psyche_h.fail(f"{type(exc).__name__}: {exc}")
             salience = 1
             if c_obs:
                 chord = c_obs["user_chord"]
@@ -569,7 +599,13 @@ class Mind:
                 for it in items:
                     if not it.get("chord") and chord:
                         it["chord"] = chord
-                await self.memory.add_layers(pid, event_id, items, sources=sources)
+                mem_h = self.health_registry.get("memory_store")
+                try:
+                    await self.memory.add_layers(pid, event_id, items, sources=sources)
+                    mem_h.ok(extra={"last_layers": len(items)})
+                except Exception as exc:  # noqa: BLE001
+                    mem_h.fail(f"add_layers: {type(exc).__name__}: {exc}")
+                    raise
                 salience = max([1, *[int(n.get("salience", 1) or 1) for n in c_obs["notes"]
                                      if str(n.get("salience", "1")).isdigit()]])
                 await self.memory.apply_hypotheses(pid, c_obs["hypotheses"], sources)
