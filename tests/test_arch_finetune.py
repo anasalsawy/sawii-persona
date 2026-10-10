@@ -188,6 +188,52 @@ class LockTests(unittest.TestCase):
             ok, reason = lock.verify_lock(snap, path, key=key)
             self.assertFalse(ok)
 
+    def test_double_lock_same_snapshot_is_idempotent(self):
+        """Two lock() calls with the same snapshot should return the same path
+        without re-signing. The first score wins."""
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = snapshot.Snapshot(config_id="t", settings={"x": 1},
+                                     prompts={"P": "old"}, captured_at=0.0)
+            key = b"a" * 32
+            p1 = lock.lock(snap, key=key, harmony_score=0.85,
+                           lock_dir=os.path.join(tmp, "locks"),
+                           snapshot_dir=os.path.join(tmp, "snaps"))
+            mtime1 = os.path.getmtime(p1)
+            # Second call: same snapshot, different score.
+            p2 = lock.lock(snap, key=key, harmony_score=0.99,
+                           lock_dir=os.path.join(tmp, "locks"),
+                           snapshot_dir=os.path.join(tmp, "snaps"))
+            self.assertEqual(p1, p2)
+            # The file should NOT have been rewritten (same mtime).
+            self.assertEqual(os.path.getmtime(p1), mtime1)
+            # The original score wins.
+            with open(p1) as f:
+                data = json.load(f)
+            self.assertEqual(data["harmony_score"], 0.85)
+
+    def test_lock_conflict_when_snapshot_drifts(self):
+        """Re-locking with a different snapshot for the same config_id raises
+        LockConflictError unless overwrite=True."""
+        with tempfile.TemporaryDirectory() as tmp:
+            snap_old = snapshot.Snapshot(config_id="t", settings={"x": 1},
+                                         prompts={"P": "old"}, captured_at=0.0)
+            key = b"a" * 32
+            lock.lock(snap_old, key=key, harmony_score=0.85,
+                      lock_dir=os.path.join(tmp, "locks"),
+                      snapshot_dir=os.path.join(tmp, "snaps"))
+            snap_new = snapshot.Snapshot(config_id="t", settings={"x": 2},
+                                         prompts={"P": "new"}, captured_at=0.0)
+            with self.assertRaises(lock.LockConflictError):
+                lock.lock(snap_new, key=key, harmony_score=0.9,
+                          lock_dir=os.path.join(tmp, "locks"),
+                          snapshot_dir=os.path.join(tmp, "snaps"))
+            # Overwrite=True allows it.
+            p = lock.lock(snap_new, key=key, harmony_score=0.9,
+                          lock_dir=os.path.join(tmp, "locks"),
+                          snapshot_dir=os.path.join(tmp, "snaps"),
+                          overwrite=True)
+            self.assertTrue(os.path.exists(p))
+
 
 class DriftDetectorTests(unittest.TestCase):
     def test_no_alert_when_buffer_too_small(self):

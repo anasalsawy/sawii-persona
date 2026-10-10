@@ -171,6 +171,78 @@ class CProposeTests(unittest.TestCase):
         self.assertEqual(proposal["target"], "settings.recall_band")
         self.assertEqual(proposal["new_value"], 0.20)
 
+    def test_c_propose_flags_observer_payload_as_malformed(self):
+        """When C returns the observer payload (e.g. cannot switch roles),
+        c_propose must NOT treat the missing target as a real convergence."""
+        from sawii_persona.brains.harmonist import c_propose
+        from sawii_persona.llm import ScriptedLLM
+
+        observer_payload = {
+            "user_chord": {"fear": 0.5, "tenderness": 0.5},
+            "notes": [], "readings": [], "hypotheses": [], "entities": [],
+            "reinterpret": [], "brief_for_b": "maya matters",
+        }
+
+        def respond(messages, opts):
+            return json.dumps(observer_payload)
+
+        llm = ScriptedLLM(respond, name="C-test")
+        proposal = asyncio.run(c_propose(llm, baseline={"aggregate": 0.7}, recent_rejections=[]))
+        self.assertEqual(proposal["target"], "_error")
+        self.assertIn("observer payload", proposal["rationale"])
+
+    def test_c_propose_flags_unparseable_response(self):
+        from sawii_persona.brains.harmonist import c_propose
+        from sawii_persona.llm import ScriptedLLM
+
+        def respond(messages, opts):
+            return "not json at all - just prose"
+
+        llm = ScriptedLLM(respond, name="C-test")
+        proposal = asyncio.run(c_propose(llm, baseline={"aggregate": 0.7}, recent_rejections=[]))
+        self.assertEqual(proposal["target"], "_error")
+        self.assertIn("unparseable", proposal["rationale"])
+
+    def test_c_propose_flags_missing_new_value(self):
+        from sawii_persona.brains.harmonist import c_propose
+        from sawii_persona.llm import ScriptedLLM
+
+        def respond(messages, opts):
+            return json.dumps({"target": "settings.recall_band", "rationale": "fix it"})
+
+        llm = ScriptedLLM(respond, name="C-test")
+        proposal = asyncio.run(c_propose(llm, baseline={"aggregate": 0.7}, recent_rejections=[]))
+        self.assertEqual(proposal["target"], "_error")
+        self.assertIn("missing new_value", proposal["rationale"])
+
+    def test_c_propose_flags_unrecognized_target_prefix(self):
+        from sawii_persona.brains.harmonist import c_propose
+        from sawii_persona.llm import ScriptedLLM
+
+        def respond(messages, opts):
+            return json.dumps({"target": "random.field", "new_value": 1})
+
+        llm = ScriptedLLM(respond, name="C-test")
+        proposal = asyncio.run(c_propose(llm, baseline={"aggregate": 0.7}, recent_rejections=[]))
+        self.assertEqual(proposal["target"], "_error")
+        self.assertIn("unrecognized target prefix", proposal["rationale"])
+
+    def test_c_propose_accepts_prompts_target_prefix(self):
+        from sawii_persona.brains.harmonist import c_propose
+        from sawii_persona.llm import ScriptedLLM
+
+        def respond(messages, opts):
+            return json.dumps({
+                "target": "prompts.A_SYSTEM",
+                "new_value": "new prompt text",
+                "rationale": "voice was off",
+            })
+
+        llm = ScriptedLLM(respond, name="C-test")
+        proposal = asyncio.run(c_propose(llm, baseline={"aggregate": 0.7}, recent_rejections=[]))
+        self.assertEqual(proposal["target"], "prompts.A_SYSTEM")
+        self.assertEqual(proposal["new_value"], "new prompt text")
+
 
 class HarmonisPassEndToEndTests(unittest.TestCase):
     """Run the full harmonist pass against the corpus using scripted lobes.

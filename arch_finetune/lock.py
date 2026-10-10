@@ -87,11 +87,41 @@ def _sign(payload: bytes, key: bytes) -> str:
 
 def lock(snap: Snapshot, *, key: bytes, harmony_score: float, locked_by: str = "human",
          lock_dir: str = "./data/locks", snapshot_dir: str = "./data/snapshots",
-         notes: str = "") -> str:
-    """Sign a snapshot and write the lock record. Returns the lock file path."""
+         notes: str = "", overwrite: bool = False) -> str:
+    """Sign a snapshot and write the lock record. Returns the lock file path.
+
+    Idempotency: if a lock for this ``config_id`` already exists and the
+    underlying snapshot is byte-identical, this returns the existing lock
+    path unchanged (the new harmony_score / notes are *ignored* — locking
+    is a single signed assertion, not a stream). If a lock exists but the
+    snapshot has drifted, the call raises :class:`LockConflictError` unless
+    ``overwrite=True``.
+    """
     os.makedirs(snapshot_dir, exist_ok=True)
     os.makedirs(lock_dir, exist_ok=True)
     snap_path = os.path.join(snapshot_dir, f"{snap.config_id}.json")
+    lock_path = os.path.join(lock_dir, f"{snap.config_id}.lock.json")
+
+    # Idempotency check: if a lock exists, verify it.
+    if os.path.exists(lock_path) and not overwrite:
+        try:
+            existing = LockRecord.load(lock_path)
+            if existing.config_id == snap.config_id:
+                existing_snap = Snapshot.load(existing.snapshot_path)
+                if existing_snap == snap:
+                    # Same snapshot already locked - return existing.
+                    return lock_path
+                # Different snapshot - refuse unless overwrite=True.
+                raise LockConflictError(
+                    f"lock for {snap.config_id} exists with a different snapshot; "
+                    f"pass overwrite=True to replace it"
+                )
+        except LockConflictError:
+            raise
+        except Exception:
+            # Corrupt or unreadable lock - fall through and overwrite.
+            pass
+
     snap.save(snap_path)
     record = LockRecord(
         config_id=snap.config_id,
@@ -115,9 +145,12 @@ def lock(snap: Snapshot, *, key: bytes, harmony_score: float, locked_by: str = "
         "snapshot": _snapshot_bytes(snap).decode("utf-8"),
     }, sort_keys=True).encode("utf-8")
     record.signature = _sign(record_bytes, key)
-    lock_path = os.path.join(lock_dir, f"{snap.config_id}.lock.json")
     record.save(lock_path)
     return lock_path
+
+
+class LockConflictError(RuntimeError):
+    """Raised when ``lock()`` would overwrite a different snapshot's lock."""
 
 
 def verify_lock(snap_now: Snapshot, lock_path: str, *, key: bytes) -> tuple[bool, str]:

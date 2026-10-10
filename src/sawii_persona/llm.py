@@ -90,6 +90,14 @@ class OpenAICompatLLM(LLM):
         self.endpoint = endpoint
         self.name = name
         self._client = client
+        # Optional runtime metrics. Reset between runs by callers who care.
+        # Keys: n_calls, n_errors, total_ms, last_status.
+        self.call_stats: dict = {"n_calls": 0, "n_errors": 0, "total_ms": 0.0,
+                                 "last_status": 0, "last_error": ""}
+
+    def reset_stats(self) -> None:
+        self.call_stats = {"n_calls": 0, "n_errors": 0, "total_ms": 0.0,
+                           "last_status": 0, "last_error": ""}
 
     @property
     def model(self) -> str:
@@ -155,28 +163,43 @@ class OpenAICompatLLM(LLM):
 
     async def chat(self, messages, *, tools=None, temperature=0.7, max_tokens=1024, json_mode=False,
                    model: str | None = None) -> ChatResult:
+        import time as _time
         if not self.endpoint.configured:
             if self.on_health is not None:
                 self.on_health.fail("endpoint not configured")
+            self.call_stats["n_errors"] += 1
+            self.call_stats["last_error"] = "endpoint not configured"
             raise LLMError(f"{self.name}: endpoint not configured")
         url = f"{self.endpoint.base_url}/chat/completions"
         body = self._body(messages, tools, temperature, max_tokens, stream=False, json_mode=json_mode, model=model)
+        t0 = _time.monotonic()
         try:
             resp = await self._http().post(url, headers=self._headers(), json=body)
             if resp.status_code == 400 and json_mode:  # provider without response_format support
                 body.pop("response_format", None)
                 resp = await self._http().post(url, headers=self._headers(), json=body)
+            self.call_stats["last_status"] = resp.status_code
             if resp.status_code >= 400:
                 if self.on_health is not None:
                     self.on_health.fail(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                self.call_stats["n_errors"] += 1
+                self.call_stats["last_error"] = f"HTTP {resp.status_code}"
                 raise LLMError(f"{self.name}: HTTP {resp.status_code}: {resp.text[:300]}")
             data = resp.json()
         except LLMError:
+            self.call_stats["total_ms"] += (_time.monotonic() - t0) * 1000
+            self.call_stats["n_calls"] += 1
             raise
         except Exception as exc:  # noqa: BLE001
+            self.call_stats["total_ms"] += (_time.monotonic() - t0) * 1000
+            self.call_stats["n_calls"] += 1
+            self.call_stats["n_errors"] += 1
+            self.call_stats["last_error"] = f"{type(exc).__name__}: {exc}"[:200]
             if self.on_health is not None:
                 self.on_health.fail(f"{type(exc).__name__}: {exc}")
             raise
+        self.call_stats["total_ms"] += (_time.monotonic() - t0) * 1000
+        self.call_stats["n_calls"] += 1
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         calls = [ToolCall(id=c.get("id") or f"call_{i}", name=(c.get("function") or {}).get("name", ""),

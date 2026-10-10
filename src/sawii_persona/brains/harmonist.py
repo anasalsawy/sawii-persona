@@ -114,6 +114,8 @@ class HarmonistPass:
     accepted: list[dict] = field(default_factory=list)
     rejected: list[dict] = field(default_factory=list)
     converged: bool = False
+    # End-state classification: "improved" | "converged" | "no_change" | "c_unresponsive".
+    status: str = ""
 
     def summary(self) -> str:
         lines = [
@@ -138,7 +140,14 @@ async def c_propose(llm: LLM, *, baseline: dict, recent_rejections: list[str]) -
 
     `baseline` is the most recent harmony score dict (axis -> score) plus
     per-scenario scores. Returns the parsed proposal dict, or
-    {"target": "none", "rationale": "converged"} when C has nothing left.
+    {"target": "none", "rationale": "converged"} when C has nothing left,
+    or {"target": "_error", "rationale": ...} when C's response is malformed.
+
+    The two non-OK outcomes are deliberately distinguished so the caller can
+    decide whether to declare convergence or surface the error. A silent
+    "converged" caused by a malformed response (e.g. C returned the observer
+    payload instead of the architect payload) used to look like a real
+    convergence — now it is reported as an error and counted as a no-op.
     """
     user_msg = (
         "Baseline harmony score:\n" + json.dumps(baseline, indent=2) +
@@ -150,10 +159,62 @@ async def c_propose(llm: LLM, *, baseline: dict, recent_rejections: list[str]) -
         {"role": "system", "content": HARMONIST_PROMPT},
         {"role": "user", "content": user_msg},
     ], temperature=0.4, max_tokens=600, json_mode=True)
-    data = extract_json(res.text) or {}
+    raw = res.text or ""
+    data = extract_json(raw)
+    if not isinstance(data, dict):
+        # The LLM returned something that is not parseable JSON. This is a
+        # failure, not a convergence — log it.
+        return {
+            "target": "_error",
+            "rationale": f"unparseable response: {raw[:200]!r}",
+            "raw": raw[:400],
+        }
     target = str(data.get("target", "none") or "none").strip()
-    if target in {"", "none", "converged"}:
+    # Heuristic: the architect payload has a small set of fields
+    # (target, new_value, rationale, expected_axis_impact). The observer
+    # payload has many others (user_chord, notes, readings, ...). If the
+    # response has observer-only fields and no architect fields at all, it
+    # is almost certainly the observer payload leaking through, not a real
+    # "converged" signal.
+    observer_only = {"user_chord", "notes", "readings", "hypotheses",
+                     "entities", "reinterpret", "brief_for_b", "expect"}
+    has_observer_fields = bool(observer_only & set(data.keys()))
+    has_architect_fields = any(k in data for k in
+                               ("target", "new_value", "expected_axis_impact"))
+    if has_observer_fields and not has_architect_fields:
+        # C returned the observer payload, not the architect payload.
+        return {
+            "target": "_error",
+            "rationale": "observer payload returned instead of architect payload",
+            "raw": raw[:400],
+        }
+    if target in {"none", "converged"}:
+        # C explicitly said converged. Real convergence.
         return {"target": "none", "rationale": "converged"}
+    if target == "":
+        # Empty target - treat as malformed, not converged.
+        return {
+            "target": "_error",
+            "rationale": "empty target",
+            "raw": raw[:400],
+        }
+    # Sanity check: a proposal must include a target AND either a new_value
+    # OR a clear instruction. Missing new_value is suspicious — flag it.
+    if "new_value" not in data:
+        return {
+            "target": "_error",
+            "rationale": f"missing new_value: target={target}",
+            "raw": raw[:400],
+        }
+    # Distinguish a real proposal from C returning the observer payload by
+    # accident: the architect payload always has a target prefixed with
+    # "settings." or "prompts.". If it doesn't, that's a malformed response.
+    if not (target.startswith("settings.") or target.startswith("prompts.")):
+        return {
+            "target": "_error",
+            "rationale": f"unrecognized target prefix: target={target}",
+            "raw": raw[:400],
+        }
     return {
         "target": target,
         "new_value": data.get("new_value"),
@@ -215,6 +276,18 @@ async def harmonist_pass(
             record.converged = True
             print(f"[harmonist] converged after {i} edits")
             break
+        if proposal["target"] == "_error":
+            # Malformed response from C. Count as a no-op but do not stop —
+            # C may give a good proposal on the next try. Surface in the log.
+            # Do NOT add to rejected_targets: the next call is a retry, not
+            # a re-propose of a known-bad target.
+            err_record = {"i": i, **proposal, "status": "c_response_error",
+                          "delta": 0.0, "new_aggregate": current_score}
+            record.proposals.append(err_record)
+            record.rejected.append(err_record)
+            print(f"[harmonist] [{i}] C returned malformed response: "
+                  f"{proposal.get('rationale', '')[:120]}")
+            continue
         # Apply.
         snap_before = snap_mod.Snapshot.capture(settings, prompts_module,
                                                 config_id=f"harmonist-before-{i}")
@@ -257,6 +330,17 @@ async def harmonist_pass(
             print(f"[harmonist] [{i}] rejected {proposal['target']}: {delta:+.3f}")
     record.final_score = best_score
     record.finished_at = time.time()
+    # If every proposal was an error (C kept returning the wrong shape),
+    # report it as an error pass, not a converged pass.
+    if (record.proposals and not record.accepted
+            and all(p.get("target") == "_error" for p in record.proposals)):
+        record.status = "c_unresponsive"
+    elif record.converged:
+        record.status = "converged"
+    elif record.accepted:
+        record.status = "improved"
+    else:
+        record.status = "no_change"
     # Optional lock.
     if lock_key is not None and best_score > base_score.aggregate:
         snap = snap_mod.Snapshot.capture(best_settings, best_prompts,
@@ -272,16 +356,81 @@ async def harmonist_pass(
 
 def _write_log(path: str, record: HarmonistPass) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # Rotation: if the existing log is over 1 MB, rotate it to .1 (keeping
+    # the last 3 files). Cheap to do once-per-write because most writes are
+    # O(1) bytes — the rotation only fires after a long run.
+    _rotate_if_needed(path, max_bytes=1_000_000, keep=3)
+    # Full record: every field except raw prompts, to keep log lines short.
     with open(path, "a") as f:
         f.write(json.dumps({
+            "event": "harmonist_pass",
             "started_at": record.started_at,
             "finished_at": record.finished_at,
+            "wall_clock_ms": round((record.finished_at - record.started_at) * 1000, 1)
+                              if record.finished_at else 0,
             "baseline_score": record.baseline_score,
             "final_score": record.final_score,
-            "accepted": record.accepted,
-            "rejected": record.rejected,
+            "delta": round(record.final_score - record.baseline_score, 4),
+            "status": record.status,
             "converged": record.converged,
+            "n_proposals": len(record.proposals),
+            "n_accepted": len(record.accepted),
+            "n_rejected": len(record.rejected),
+            "accepted": [
+                {"target": p["target"], "delta": p.get("delta", 0.0),
+                 "rationale": (p.get("rationale") or "")[:200]}
+                for p in record.accepted
+            ],
+            "rejected": [
+                {"target": p["target"], "delta": p.get("delta", 0.0),
+                 "rationale": (p.get("rationale") or "")[:200],
+                 "status": p.get("status", "rejected_score")}
+                for p in record.rejected
+            ],
         }) + "\n")
+
+
+def _rotate_if_needed(path: str, *, max_bytes: int, keep: int) -> None:
+    """If ``path`` exists and is over ``max_bytes``, shift it to ``.1``,
+    ``.2`` ... up to ``.keep-1``. Old ``.keep`` is deleted.
+
+    No-op if the file does not exist or is small enough.
+    """
+    if not os.path.exists(path):
+        return
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return
+    if size < max_bytes:
+        return
+    # Shift from the end backwards: .keep -> delete, .(keep-1) -> .keep, etc.
+    for i in range(keep, 0, -1):
+        src = f"{path}.{i}" if i > 0 else path
+        dst = f"{path}.{i + 1}"
+        if os.path.exists(src):
+            if i == keep:
+                try:
+                    os.remove(src)
+                except OSError:
+                    pass
+            else:
+                try:
+                    os.replace(src, dst)
+                except OSError:
+                    pass
+    # Move the current file to .1
+    try:
+        os.replace(path, f"{path}.1")
+    except OSError:
+        # If we can't rotate, truncate to half size so the next write fits.
+        try:
+            with open(path, "r") as f:
+                lines = f.readlines()
+            with open(path, "w") as f:
+                f.writelines(lines[len(lines) // 2:])
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
