@@ -178,39 +178,39 @@ class Mind:
 
             scratch = self.scratch_for(pid)
             recall_h = self.health_registry.get("recall")
+            # Everything A's prompt needs is independent: load it in one round
+            # instead of a chain of awaits before the first token.
+            async def _unseen_jobs():
+                return await self.deep.unseen_results(pid) if self.deep is not None else []
+
             try:
-                tail_rows = await self.memory.tail(pid, self.s.tail_turns)
-            except Exception as exc:  # noqa: BLE001
-                recall_h.fail(f"tail failed: {type(exc).__name__}: {exc}")
-                raise
-            tail_rows = [t for t in tail_rows if t["id"] != turn_id]
-            try:
-                recall_res, loops, integ = await asyncio.gather(
+                tail_rows, recall_res, loops, integ, rules, mind_rows, done_jobs = await asyncio.gather(
+                    self.memory.tail(pid, self.s.tail_turns),
                     self.recall.recall(persona, user_text, budget=self.s.recall_budget_chars,
                                        exclude_turn_ids={turn_id}, mood=_blend_moods(persona)),
                     self.memory.open_loops(pid),
-                    self.memory.integrity(pid))
+                    self.memory.integrity(pid),
+                    self.memory.rules(pid),
+                    # what the other minds kept thinking about since the last talk (offered once)
+                    self.store.all(
+                        "SELECT id, text FROM thoughts WHERE persona_id = ? AND status = 'pending' AND source IN "
+                        "('reflection','recollection','dream') ORDER BY score DESC, id DESC LIMIT 2", pid),
+                    _unseen_jobs())
                 recall_h.ok(extra={"rows": len(getattr(recall_res, "layer_ids", []) or []),
                                    "budget": self.s.recall_budget_chars})
             except Exception as exc:  # noqa: BLE001
                 recall_h.fail(f"{type(exc).__name__}: {exc}")
                 raise
+            tail_rows = [t for t in tail_rows if t["id"] != turn_id]
             recall_text = recall_res.text
-            if self.deep is not None:
-                done_jobs = await self.deep.unseen_results(pid)
-                if done_jobs:
-                    recall_text += "\n\nYour workshop finished (tell them if it matters):\n" + "\n".join(
-                        f"• job {j['id']}: {j['task'][:160]} -> {j['result'][:1200]}" for j in done_jobs)
-            # what the other minds kept thinking about since the last talk (offered once)
-            mind_rows = await self.store.all(
-                "SELECT id, text FROM thoughts WHERE persona_id = ? AND status = 'pending' AND source IN "
-                "('reflection','recollection','dream') ORDER BY score DESC, id DESC LIMIT 2", pid)
-            for r in mind_rows:
-                await self.store.update("thoughts", r["id"], status="offered")
+            if done_jobs:
+                recall_text += "\n\nYour workshop finished (tell them if it matters):\n" + "\n".join(
+                    f"• job {j['id']}: {j['task'][:160]} -> {j['result'][:1200]}" for j in done_jobs)
+            if mind_rows:
+                await asyncio.gather(*(self.store.update("thoughts", r["id"], status="offered") for r in mind_rows))
             last_chat = next((t for t in reversed(tail_rows) if t["kind"] == "chat" and t["ended_at"]), None)
             if last_chat:
                 clock.last_exchange_seconds = max(0.0, last_chat["ended_at"] - last_chat["started_at"])
-            rules = await self.memory.rules(pid)
             # Populate the lane-question slot BEFORE build_messages so A sees
             # any outstanding questions from a running plugin in its brief.
             scratch.lane_questions = self.director.pending_questions_brief(pid)
