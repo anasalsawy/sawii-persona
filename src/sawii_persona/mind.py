@@ -393,11 +393,22 @@ class Mind:
                 offered.extend(gateway_tools)
             result = VoiceResult()
             failed = False
+            # Streaming verifier: starts concurrent with A's first token, consumes
+            # each delta, finalizes when A ends. Verdict is on the bus before
+            # the SSE's done event, so chat() returns without polling.
+            from .brains.live_verifier import LiveVerifier
+            live_verifier = LiveVerifier(
+                self.b,
+                user_text=user_text, recall_text=recall_res.text, rules=rules,
+                bus=self.bus, persona_id=pid,
+                on_health=self.health_registry.get("verifier"))
+            live_verifier.start()
             try:
                 heard = 0
                 async for piece in speak(self.a, messages, tools=offered if use_tools else None, run_tool=run_tool,
                                          result=result, model=self.a_model_for(persona), inner=inner,
                                          on_text=live_lobes.on_text):
+                    live_verifier.observe_token(piece)
                     while yield_tool:
                         ev = yield_tool.pop(0)
                         kind = ev.get("kind", "")
@@ -431,6 +442,23 @@ class Mind:
                 scratch.correction = ""  # delivered (B re-checks next review)
             scratch.conscience = ""
 
+            # Streaming verifier: drain whatever verdict it already emitted
+            # before A ended (most cases), then finalize for a final verdict.
+            # Worst case: emit just enough of a verdict to satisfy the user-facing
+            # response, then close.
+            try:
+                drained = await live_verifier.drain(max_wait_s=0.0)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("live verifier drain failed: %s", exc)
+                drained = None
+            if not drained:
+                try:
+                    await live_verifier.finalize()
+                    drained = await live_verifier.drain(max_wait_s=2.0)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("live verifier finalize failed: %s", exc)
+                    drained = None
+
             # Turn is wrapping up: stop routing Director reports into this
             # queue, so the next turn gets a fresh one and background work
             # that lands between turns is held in history until A speaks again.
@@ -457,33 +485,27 @@ class Mind:
                         done["verdict"] = verdict
                 else:
                     self.spawn(_publish_verdict(), name=f"verdict-{turn_id}")
+            # Surface the LiveVerifier verdict directly on the done event so
+            # the SSE consumer sees it without polling. If we couldn't finalize
+            # the verifier in time, the next line in chat() will fallback to
+            # the bus; either way the verdict ships before the SSE closes.
+            if drained:
+                done["verdict"] = drained.get("level", "GREEN")
+                if drained.get("reason"):
+                    done["verdict_reason"] = drained["reason"][:300]
             yield done
 
     async def chat(self, pid: int, text: str, **kw) -> dict:
-        """Non-streaming convenience. When show_verdict is on, wait briefly for
-        the verdict event so callers (and tests) still see it attached."""
+        """Non-streaming convenience. The verdict is now attached to the
+        done event by the LiveVerifier — no polling needed."""
         out = {}
-        verdict_ev: dict = {}
-        q = self.bus.subscribe(pid) if self.s.show_verdict_to_user else None
         try:
             async for ev in self.respond(pid, text, **kw):
                 if ev["type"] == "done":
                     out = ev
-            if q is not None and "verdict" not in out:
-                end = time.monotonic() + 15
-                while time.monotonic() < end:
-                    try:
-                        bev = await asyncio.wait_for(q.get(), timeout=max(0.01, end - time.monotonic()))
-                    except asyncio.TimeoutError:
-                        break
-                    if bev.get("type") == "verdict" and bev.get("turn_id") == out.get("turn_id"):
-                        verdict_ev = bev
-                        break
-                if verdict_ev:
-                    out["verdict"] = verdict_ev["verdict"]
+                    break
         finally:
-            if q is not None:
-                self.bus.unsubscribe(pid, q)
+            pass
         return out
 
     # ------------------------------------------------------------- after the turn
