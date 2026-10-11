@@ -469,18 +469,19 @@ class Mind:
             async for ev in self.respond(pid, text, **kw):
                 if ev["type"] == "done":
                     out = ev
+                    break  # latency fix: return on done; verdict arrives later on the bus
+            # Best-effort: opportunistically attach a verdict if one is already
+            # on the bus when we get here. Don't poll/wait — the verdict event
+            # would have arrived between yield 'done' and break if it was fast.
             if q is not None and "verdict" not in out:
-                end = time.monotonic() + 15
-                while time.monotonic() < end:
-                    try:
-                        bev = await asyncio.wait_for(q.get(), timeout=max(0.01, end - time.monotonic()))
-                    except asyncio.TimeoutError:
-                        break
-                    if bev.get("type") == "verdict" and bev.get("turn_id") == out.get("turn_id"):
-                        verdict_ev = bev
-                        break
-                if verdict_ev:
-                    out["verdict"] = verdict_ev["verdict"]
+                try:
+                    while True:
+                        bev = q.get_nowait()
+                        if bev.get("type") == "verdict" and bev.get("turn_id") == out.get("turn_id"):
+                            out["verdict"] = bev["verdict"]
+                            break
+                except Exception:  # noqa: BLE001
+                    pass
         finally:
             if q is not None:
                 self.bus.unsubscribe(pid, q)
@@ -508,15 +509,19 @@ class Mind:
             m: Meter | None = None
             if not failed:
                 transcript_text = adjutant.transcript(tail, user_text, reply)
-                verify_task = asyncio.create_task(verifier.verify(
-                    self.b, context=transcript_text, response_text=reply, events="",
-                    latest_request=user_text,
-                    on_health=self.health_registry.get("verifier")))
-                try:
-                    b_rev = await adjutant.review(self.b, persona=persona, user_text=user_text, reply=reply, tail=tail,
+                transcript_text2 = transcript_text  # alias for verifier
+                async def _b_review_task():
+                    return await adjutant.review(self.b, persona=persona, user_text=user_text, reply=reply, tail=tail,
                                                   recall_text=recall_res.text, consults=consults, loops=loops,
                                                   c_brief=scratch.c_brief, at=now(), a_chord=a_chord,
                                                   rules=await self.memory.rules(pid))
+                b_review_task = asyncio.create_task(_b_review_task())
+                verify_task = asyncio.create_task(verifier.verify(
+                    self.b, context=transcript_text2, response_text=reply, events="",
+                    latest_request=user_text,
+                    on_health=self.health_registry.get("verifier")))
+                try:
+                    b_rev = await b_review_task
                 except Exception as exc:  # noqa: BLE001
                     log.warning("B review failed: %s", exc)
                 try:
