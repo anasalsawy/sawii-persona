@@ -19,6 +19,7 @@ line is labeled with layer, author and date so A weighs it instead of obeying it
 """
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass, field
 
@@ -203,7 +204,8 @@ class Recall:
         res = RecallResult()
         if not query.strip() and not rows:
             return res
-        sc = await self._score(persona, rows, query, mood)
+        sc, ents = await asyncio.gather(self._score(persona, rows, query, mood),
+                                        self.memory.entities_in(pid, query))
         t = now()
         scores: dict[int, float] = {}
         lane_of: dict[int, str] = {}
@@ -217,7 +219,7 @@ class Recall:
                     scores[rid], lane_of[rid] = score * 0.9, "mood"
 
             # entity lane
-            for ent in await self.memory.entities_in(pid, query):
+            for ent in ents:
                 name = ent["name"].lower()
                 for r in rows:
                     if name in f"{r['text']} {r['quote']} {r['anchor']}".lower() and r["id"] not in scores:
@@ -232,7 +234,7 @@ class Recall:
                 pick = max(pending, key=lambda r: (r["salience"], -r["created_at"]))
                 scores[pick["id"]], lane_of[pick["id"]] = 0.45, "unaddressed"
 
-            held = self._held_back(rows, sc, {e["name"].lower() for e in await self.memory.entities_in(pid, query)})
+            held = self._held_back(rows, sc, {e["name"].lower() for e in ents})
             for r in rows:
                 if r["event_id"] in held:
                     scores.pop(r["id"], None)
@@ -270,7 +272,7 @@ class Recall:
 
         # entity cards
         ent_lines = []
-        for ent in (await self.memory.entities_in(pid, query))[:4]:
+        for ent in ents[:4]:
             line = f"• {ent['name']} ({ent['kind']}): {ent['account'][:300]}"
             if ent["last_quote"]:
                 line += f' — last said: "{ent["last_quote"][:160]}"'

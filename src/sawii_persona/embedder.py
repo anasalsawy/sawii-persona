@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import logging
 import re
+from collections import OrderedDict
 
 import numpy as np
 
@@ -103,6 +104,16 @@ class Embedder:
         # tracking fields above remain for callers that don't use the
         # registry.
         self.on_health = None  # type: ignore[assignment]
+        # A turn embeds the same cue more than once (recall + B's live
+        # shortlist); cache recent single-text results and share in-flight
+        # requests so the remote round trip is paid once per cue.
+        self._one_cache: "OrderedDict[str, tuple[str, list[float]]]" = OrderedDict()
+        self._one_cache_size = 256
+        self._inflight: dict[str, asyncio.Future] = {}
+        # Circuit breaker: after a remote failure, skip the remote call for a
+        # while instead of making every turn wait out the timeout again.
+        self.cooldown_seconds = 60.0
+        self._skip_remote_until = 0.0
 
     @property
     def model(self) -> str:
@@ -130,7 +141,7 @@ class Embedder:
     async def embed(self, texts: list[str]) -> tuple[str, list[list[float]]]:
         texts = [t[:8000] for t in texts]
         model_name = getattr(self.llm, "model", "remote") if self.llm else None
-        if self.llm is not None:
+        if self.llm is not None and self._time.monotonic() >= self._skip_remote_until:
             try:
                 vecs = await asyncio.wait_for(self.llm.embed(texts), self.timeout)
                 if vecs and len(vecs) == len(texts):
@@ -144,6 +155,7 @@ class Embedder:
             except Exception as exc:  # outage: degrade, never block a turn
                 log.warning("embedder fallback to local hash: %s", exc)
                 self._last_error = f"{type(exc).__name__}: {exc}"
+                self._skip_remote_until = self._time.monotonic() + self.cooldown_seconds
                 if self.on_health is not None:
                     self.on_health.fail(f"{type(exc).__name__}: {exc}",
                                          extra={"model": model_name, "live_model": HASH_MODEL,
@@ -157,5 +169,28 @@ class Embedder:
         return HASH_MODEL, [hash_embed(t) for t in texts]
 
     async def embed_one(self, text: str) -> tuple[str, list[float]]:
-        model, vecs = await self.embed([text])
-        return model, vecs[0]
+        key = text[:8000]
+        hit = self._one_cache.get(key)
+        if hit is not None:
+            self._one_cache.move_to_end(key)
+            return hit
+        pending = self._inflight.get(key)
+        if pending is not None:
+            return await asyncio.shield(pending)
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._inflight[key] = fut
+        try:
+            model, vecs = await self.embed([key])
+            out = (model, vecs[0])
+            if model != HASH_MODEL:
+                self._one_cache[key] = out
+                while len(self._one_cache) > self._one_cache_size:
+                    self._one_cache.popitem(last=False)
+            fut.set_result(out)
+            return out
+        except BaseException as exc:
+            fut.set_exception(exc)
+            fut.exception()  # mark retrieved; waiters re-raise via shield
+            raise
+        finally:
+            self._inflight.pop(key, None)
