@@ -47,9 +47,15 @@ PART III · THE PRIZE
   06  The aging           the feature this whole architecture was built toward
   07  What emerges        moods, upset, dread, continuity — a self with a biography
 
-PART IV  · THE FEATURES   the full catalog
-PART V   · THE ROADMAP    how it gets built, in order
-PART VI  · HONEST LIMITS  what is hard, what is unproven, what is the price
+PART IV  · THE FEATURES
+  08  The catalog         every feature, grouped by what it serves
+
+PART V   · THE ROADMAP
+  09  The roadmap         how it gets built, in order
+
+PART VI  · THE HONEST PART
+  10  Open questions      the decisions still to be made (the owner's call)
+  11  Honest limits       what is unproven, what is hard, what is the price
 ```
 
 ---
