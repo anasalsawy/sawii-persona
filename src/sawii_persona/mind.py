@@ -369,6 +369,13 @@ class Mind:
                             out = json.dumps({"ok": False, "reason": "missing question_id"})
                         else:
                             out = json.dumps(await self.director.answer_question(pid, qid, ans))
+                    elif call.name == "reach_out":
+                        out = await self.reach_out(persona, str(call.args().get("channel", "")),
+                                                   str(call.args().get("text", "")),
+                                                   str(call.args().get("to", "")))
+                    elif call.name == "place_call":
+                        out = await self.place_call(persona, str(call.args().get("to", "")),
+                                                    str(call.args().get("purpose", "")))
                     elif call.name in gateway_names:
                         out = await _call_gateway(call.name, call.args, tool_call_id=call.id)
                     else:
@@ -485,6 +492,40 @@ class Mind:
             if q is not None:
                 self.bus.unsubscribe(pid, q)
         return out
+
+    # ------------------------------------------------------------- reaching out
+    async def reach_out(self, persona: dict, channel: str, text: str, to: str = "") -> str:
+        """Send a message on a real channel, from inside the turn (a native tool)."""
+        channel = (channel or "").strip().lower()
+        text = (text or "").strip()
+        if channel not in ("telegram", "whatsapp", "sms", "email"):
+            return json.dumps({"ok": False, "error": "channel must be telegram/whatsapp/sms/email"})
+        if not text:
+            return json.dumps({"ok": False, "error": "empty message"})
+        if getattr(self, "channels", None) is None:
+            return json.dumps({"ok": False, "error": "no channels configured"})
+        try:
+            await self.channels.deliver(persona, channel, text, to=(to or None))
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"ok": False, "error": str(exc)[:200]})
+        try:
+            oid = await self.store.insert("outbox", persona_id=persona["id"], channel=channel, text=text,
+                                          reason="reach_out", status="sent", created_at=now(), sent_at=now())
+            self.bus.publish(persona["id"], {"type": "message", "id": oid, "text": text, "channel": channel,
+                                             "reason": "reach_out", "at": now()})
+        except Exception:  # noqa: BLE001
+            pass
+        return json.dumps({"ok": True, "channel": channel, "sent": text[:200]})
+
+    async def place_call(self, persona: dict, to: str, purpose: str) -> str:
+        """Two-lobe phone call: B (director) composes, A (caller) speaks, Twilio dials."""
+        purpose = (purpose or "").strip()
+        if not purpose:
+            return json.dumps({"ok": False, "error": "purpose required"})
+        if getattr(self, "caller", None) is None:
+            return json.dumps({"ok": False, "error": "calling not available"})
+        res = await self.caller.place(persona, to, purpose)
+        return json.dumps(res)
 
     # ------------------------------------------------------------- after the turn
     async def _post_turn(self, persona, turn_id, user_text, reply, tail, recall_res, board, a_chord, surface,

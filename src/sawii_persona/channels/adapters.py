@@ -63,8 +63,13 @@ class Channels:
                 return ch
         return "app"
 
-    async def deliver(self, persona: dict, channel: str, text: str, *, subject: str = "") -> None:
-        contact = jload(persona.get("contact"), {}) or {}
+    async def deliver(self, persona: dict, channel: str, text: str, *, subject: str = "",
+                      to: str | None = None) -> None:
+        contact = dict(jload(persona.get("contact"), {}) or {})
+        if to:
+            contact[channel] = to
+            if channel == "call":
+                contact["sms"] = to
         if channel == "app":
             return  # outbox + live bus already carry it
         if channel not in self.available():

@@ -84,6 +84,27 @@ A_TOOLS = [
             "question_id": {"type": "string", "description": "The id shown with the question."},
             "answer":      {"type": "string", "description": "Your decision, in your own voice."}},
             "required": ["question_id", "answer"]}}},
+    {"type": "function", "function": {
+        "name": "reach_out",
+        "description": "Send the person a message on one of their real channels right now - telegram, "
+                       "whatsapp, sms or email - instead of only replying here. Use it when they ask you "
+                       "to message them somewhere, or when a note belongs on a different door than the one "
+                       "they are talking through. Returns whether it went.",
+        "parameters": {"type": "object", "properties": {
+            "channel": {"type": "string", "enum": ["telegram", "whatsapp", "sms", "email"]},
+            "text": {"type": "string", "description": "What to send, in your own voice."},
+            "to": {"type": "string", "description": "Optional destination override (number / chat id / email)."}},
+            "required": ["channel", "text"]}}},
+    {"type": "function", "function": {
+        "name": "place_call",
+        "description": "Phone the person (or someone they name) and actually talk out loud. Your adjutant "
+                       "directs the call - decides the opening and what to get out of it - and you speak "
+                       "it; their spoken reply comes back to you so the call continues. Use for anything "
+                       "that should be said out loud or handled on a call.",
+        "parameters": {"type": "object", "properties": {
+            "to": {"type": "string", "description": "Number to call, or 'me' for the person's own number."},
+            "purpose": {"type": "string", "description": "Why you are calling and what to get out of it."}},
+            "required": ["purpose"]}}},
 ]
 
 

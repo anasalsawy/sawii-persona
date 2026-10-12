@@ -85,6 +85,12 @@ class Runtime:
         self.sleep = Sleep(self.mind, self.finetuner)
         self.initiative = Initiative(self.mind, self.channels, self.sleep)
         self.mind.outbox = self.initiative
+        # B's hands reach the world through channels; A can now call reach_out /
+        # place_call natively, from inside a turn.
+        self.mind.channels = self.channels
+        from ..voice.calls import Caller
+        self.caller = Caller(self.mind, self.channels, settings)
+        self.mind.caller = self.caller
         attach_deep(self.mind, settings)
         self.speech = SpeechIO(settings.asr, settings.tts, settings.tts_voice)
         self.limiter = RateLimiter()
@@ -495,6 +501,34 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
             mind.spawn(_inbound(persona, str(form["Body"]), channel), name="inbound-twilio")
         return Response("<Response></Response>", media_type="application/xml")
 
+    async def hook_twilio_voice(request: Request):
+        """Twilio hits this when the person answers, and on every spoken turn.
+        The call is two-lobe: B directed the opening (already spoken), A answers
+        each thing the person says, and we keep the loop going."""
+        form = dict(await request.form()) if request.headers.get("content-type", "").startswith(
+            "application/x-www-form-urlencoded") else {}
+        url = settings.public_base_url.rstrip("/") + request.url.path
+        if not twilio_signature_ok(settings.twilio_token, url, form, request.headers.get("x-twilio-signature", "")):
+            return _err(403, "bad signature")
+        try:
+            pid = int(request.query_params.get("p", "0"))
+        except ValueError:
+            return _err(400, "bad persona")
+        persona = await identity.get_persona(mind.store, pid)
+        if persona is None:
+            return _err(404, "unknown persona")
+        purpose = request.query_params.get("purpose", "")
+        speech = str(form.get("SpeechResult", "") or "")
+        from ..voice.calls import _twiml
+        base = settings.public_base_url.rstrip("/")
+        step_url = f"{base}/hooks/twilio/voice?p={pid}&purpose={request.query_params.get('purpose','')}"
+        if not speech.strip():
+            # nothing heard yet - prompt once and keep listening
+            return Response(_twiml("Are you still there?", action=step_url),
+                            media_type="application/xml")
+        reply = await rt.caller.step(persona, purpose, speech)
+        return Response(_twiml(reply, action=step_url), media_type="application/xml")
+
     async def hook_telegram(request: Request):
         if not settings.telegram_secret or not hmac.compare_digest(
                 request.headers.get("x-telegram-bot-api-secret-token", ""), settings.telegram_secret):
@@ -584,6 +618,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         Route("/v1/events", events_sse),
         WebSocketRoute("/v1/voice", voice_ws),
         Route("/hooks/twilio", hook_twilio, methods=["POST"]),
+        Route("/hooks/twilio/voice", hook_twilio_voice, methods=["POST"]),
         Route("/hooks/telegram", hook_telegram, methods=["POST"]),
         Route("/hooks/email", hook_email, methods=["POST"]),
         Route("/v1/lane/questions", lane_question, methods=["POST"]),
