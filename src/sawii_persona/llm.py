@@ -159,6 +159,13 @@ class OpenAICompatLLM(LLM):
             body["tools"] = tools
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        if getattr(self.endpoint, "no_think", False):
+            # Ask reasoning models (Qwen3, DeepSeek-R1, ...) to skip the hidden
+            # "thinking" stream (delta.reasoning). Measured: 26-74s per reply with
+            # thinking on vs ~3s with it off. Providers that do not understand the
+            # field ignore it; ones that reject it are handled by the 400-fallback
+            # in chat()/stream().
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         return body
 
     async def chat(self, messages, *, tools=None, temperature=0.7, max_tokens=1024, json_mode=False,
@@ -175,8 +182,11 @@ class OpenAICompatLLM(LLM):
         t0 = _time.monotonic()
         try:
             resp = await self._http().post(url, headers=self._headers(), json=body)
-            if resp.status_code == 400 and json_mode:  # provider without response_format support
+            if resp.status_code == 400 and (json_mode or "chat_template_kwargs" in body):
+                # Provider rejected an optional field we added (response_format
+                # and/or the thinking-off hint). Drop them and retry once.
                 body.pop("response_format", None)
+                body.pop("chat_template_kwargs", None)
                 resp = await self._http().post(url, headers=self._headers(), json=body)
             self.call_stats["last_status"] = resp.status_code
             if resp.status_code >= 400:
@@ -223,52 +233,61 @@ class OpenAICompatLLM(LLM):
         in_think = False
         ok = False
         try:
-            async with self._http().stream("POST", url, headers=self._headers(), json=body) as resp:
-                if resp.status_code >= 400:
-                    text = (await resp.aread()).decode(errors="replace")
-                    if self.on_health is not None:
-                        self.on_health.fail(f"HTTP {resp.status_code}: {text[:200]}")
-                    raise LLMError(f"{self.name}: HTTP {resp.status_code}: {text[:300]}")
-                async for line in resp.aiter_lines():
-                    line = line.strip()
-                    if not line.startswith("data:"):
+            # Two attempts at most: the second drops the thinking-off hint in case
+            # the provider rejected the unknown field with a 400.
+            for _attempt in (0, 1):
+                if _attempt:
+                    body.pop("chat_template_kwargs", None)
+                async with self._http().stream("POST", url, headers=self._headers(), json=body) as resp:
+                    if resp.status_code == 400 and "chat_template_kwargs" in body:
+                        await resp.aread()
                         continue
-                    payload = line[5:].strip()
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    choice = (chunk.get("choices") or [{}])[0]
-                    delta = choice.get("delta") or {}
-                    piece = delta.get("content") or ""
-                    if piece:
-                        # drop <think> sections from models that inline reasoning
-                        if "<think>" in piece:
-                            in_think = True
-                            piece = piece.split("<think>", 1)[0]
-                        if in_think:
-                            if "</think>" in piece:
-                                in_think = False
-                                piece = piece.split("</think>", 1)[1]
-                            else:
-                                piece = ""
+                    if resp.status_code >= 400:
+                        text = (await resp.aread()).decode(errors="replace")
+                        if self.on_health is not None:
+                            self.on_health.fail(f"HTTP {resp.status_code}: {text[:200]}")
+                        raise LLMError(f"{self.name}: HTTP {resp.status_code}: {text[:300]}")
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        choice = (chunk.get("choices") or [{}])[0]
+                        delta = choice.get("delta") or {}
+                        piece = delta.get("content") or ""
                         if piece:
-                            yield {"type": "text", "text": piece}
-                    for tc in delta.get("tool_calls") or []:
-                        idx = tc.get("index", 0)
-                        call = calls.setdefault(idx, ToolCall(id=tc.get("id") or f"call_{idx}", name=""))
-                        fn = tc.get("function") or {}
-                        if tc.get("id"):
-                            call.id = tc["id"]
-                        if fn.get("name"):
-                            call.name += fn["name"]
-                        if fn.get("arguments"):
-                            call.arguments += fn["arguments"]
-                    if choice.get("finish_reason"):
-                        finish = choice["finish_reason"]
-            ok = True
+                            # drop <think> sections from models that inline reasoning
+                            if "<think>" in piece:
+                                in_think = True
+                                piece = piece.split("<think>", 1)[0]
+                            if in_think:
+                                if "</think>" in piece:
+                                    in_think = False
+                                    piece = piece.split("</think>", 1)[1]
+                                else:
+                                    piece = ""
+                            if piece:
+                                yield {"type": "text", "text": piece}
+                        for tc in delta.get("tool_calls") or []:
+                            idx = tc.get("index", 0)
+                            call = calls.setdefault(idx, ToolCall(id=tc.get("id") or f"call_{idx}", name=""))
+                            fn = tc.get("function") or {}
+                            if tc.get("id"):
+                                call.id = tc["id"]
+                            if fn.get("name"):
+                                call.name += fn["name"]
+                            if fn.get("arguments"):
+                                call.arguments += fn["arguments"]
+                        if choice.get("finish_reason"):
+                            finish = choice["finish_reason"]
+                ok = True
+                break
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
