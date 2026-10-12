@@ -21,12 +21,80 @@ import hashlib
 import json
 import logging
 import os
+import shlex
+import shutil
 
 from ..brains.prompts import DEEP_CRITIC, DEEP_PLAN, DEEP_REDUCE
 from ..llm import LLM, extract_json, strip_reasoning
 from ..store import jdump, now
 
 log = logging.getLogger(__name__)
+
+
+class ExternalAgentWorker:
+    """B's HANDS: an external coding/execution agent (Cline by default) running in
+    the persona's server-side workspace.
+
+    This is the "hands" lobe. A is the commander; B does the work. The agent can
+    edit files, run shell, browse, call APIs - the full Cline toolset.
+
+    Two ways to reach it:
+      http  a persistent sidecar exposing POST /run {task, workspace, model}
+            (recommended: warm sessions, no per-task startup cost)
+      cli   run the agent CLI once per task (simple; pays ~1-3s startup each time)
+
+    The command is configurable (SAWII_HANDS_CMD), so the same seam drives Cline,
+    Devin, or any agent that accepts a task and a workspace.
+    """
+
+    def __init__(self, *, mode: str, url: str, cmd: str, model: str = "", api_key: str = "",
+                 timeout: float = 900.0):
+        self.mode = mode
+        self.url = url
+        self.cmd = cmd
+        self.model = model
+        self.api_key = api_key
+        self.timeout = timeout
+        first = (shlex.split(cmd) or ["agent"])[0] if cmd else "agent"
+        self.name = "cline" if "cline" in first else ("devin" if "devin" in first else "agent")
+
+    @staticmethod
+    def cli_available(cmd: str) -> bool:
+        try:
+            return bool(cmd) and shutil.which(shlex.split(cmd)[0]) is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def run(self, task: str, workspace: str) -> str:
+        if self.mode == "http":
+            return await self._run_http(task, workspace)
+        return await self._run_cli(task, workspace)
+
+    async def _run_http(self, task: str, workspace: str) -> str:
+        import httpx
+        headers = {"X-API-Key": self.api_key} if self.api_key else {}
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            r = await client.post(self.url.rstrip("/") + "/run",
+                                  json={"task": task, "workspace": workspace, "model": self.model},
+                                  headers=headers)
+            if r.status_code >= 400:
+                raise RuntimeError(f"hands {r.status_code}: {r.text[:200]}")
+            data = r.json()
+            return str(data.get("result") or data.get("output") or "")[:20000]
+
+    async def _run_cli(self, task: str, workspace: str) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            *shlex.split(self.cmd), task, cwd=workspace,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError("hands timed out")
+        text = out.decode(errors="replace").strip()
+        if proc.returncode != 0 and not text:
+            raise RuntimeError(f"hands failed ({proc.returncode}): {err.decode(errors='replace')[:200]}")
+        return text[:20000]
 
 
 def workspace_for(root: str, key_or_id: str) -> str:
@@ -179,11 +247,26 @@ class DeepLane:
 
 
 def attach(mind, settings) -> DeepLane:
-    if OpenHandsWorker.available() and settings.a.configured:
-        def factory():
-            return OpenHandsWorker(settings.b.model, settings.b.base_url, settings.b.api_key)
+    """Wire B's hands. Preference order:
+
+      1. an external agent (Cline by default) - http sidecar or CLI, configurable
+      2. OpenHands, if installed
+      3. the plain LLM worker (DeepLane's own default)
+    """
+    hands = ExternalAgentWorker(mode=settings.hands_mode, url=settings.hands_url, cmd=settings.hands_cmd,
+                                model=settings.hands_model or settings.b.model,
+                                api_key=settings.hands_api_key or settings.b.api_key,
+                                timeout=settings.hands_timeout)
+    factory = None
+    mode = (settings.hands_mode or "auto").lower()
+    if mode == "http" or (mode in ("auto", "cli") and ExternalAgentWorker.cli_available(settings.hands_cmd)):
+        factory = lambda: hands  # noqa: E731
+        log.info("hands: external agent '%s' (mode=%s, cmd=%s)", hands.name, mode, settings.hands_cmd)
+    elif mode == "auto" and OpenHandsWorker.available() and settings.a.configured:
+        factory = lambda: OpenHandsWorker(settings.b.model, settings.b.base_url, settings.b.api_key)  # noqa: E731
+        log.info("hands: openhands")
     else:
-        factory = None
+        log.info("hands: plain model worker (no external agent configured)")
     lane = DeepLane(mind, planner=mind.b, critic=mind.b, worker_factory=factory, max_lanes=settings.deep_max_lanes)
     mind.deep = lane
     return lane

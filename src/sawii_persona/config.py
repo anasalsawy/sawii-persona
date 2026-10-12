@@ -154,6 +154,19 @@ class Settings:
     smtp_from: str = field(default_factory=lambda: _env("SMTP_FROM", ""))
     email_inbound_secret: str = field(default_factory=lambda: _env("EMAIL_INBOUND_SECRET", ""))
 
+    # --- the hands (B's execution agent; Cline by default) ------------------
+    # A is the commander; B does the work. hands_mode:
+    #   auto = external agent if its CLI is present, else OpenHands, else plain model
+    #   http = POST tasks to a persistent sidecar at hands_url (warm sessions, best)
+    #   cli  = run hands_cmd once per task
+    #   off  = plain LLM worker only
+    hands_mode: str = field(default_factory=lambda: _env("HANDS_MODE", "auto"))
+    hands_url: str = field(default_factory=lambda: _env("HANDS_URL", "http://127.0.0.1:8790"))
+    hands_cmd: str = field(default_factory=lambda: _env("HANDS_CMD", "cline"))
+    hands_model: str = field(default_factory=lambda: _env("HANDS_MODEL", ""))
+    hands_api_key: str = field(default_factory=lambda: _env("HANDS_API_KEY", ""))
+    hands_timeout: float = field(default_factory=lambda: _float("HANDS_TIMEOUT", 900.0))
+
     # --- deep lane ---------------------------------------------------------
     deep_max_lanes: int = field(default_factory=lambda: _int("DEEP_MAX_LANES", 4))
     workspace_root: str = ""
