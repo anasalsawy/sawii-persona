@@ -9,6 +9,10 @@ It is **not** Dual-Lobe. Dual-Lobe is a verified inference proxy (its holy grail
 deception meter). Sawii Persona reuses some ideas from it, but it is its own product with its own
 code from A to Z.
 
+> **📖 Read the book first.** [`docs/book/`](docs/book/README.md) is the canonical description of the
+> whole idea — the minds, the memory, **the aging**, every feature, the roadmap, and the honest
+> limits — written in one place, with care. This README is the reference manual; the book is the *why*.
+
 Owner: Anas AlSawy. Status: complete codebase; 65 automated tests passing against scripted model
 stand-ins; not yet run end-to-end against the real hosted models (see [§27 Honest status](#27-honest-status)).
 

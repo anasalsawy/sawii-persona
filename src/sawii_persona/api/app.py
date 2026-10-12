@@ -207,6 +207,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
             gateway_webhook = None
         if data.get("stream"):
             async def gen():
+              try:
                 async for ev in mind.respond(persona["id"], text, surface=surface,
                                              gateway_tools=gateway_tools,
                                              gateway_webhook=gateway_webhook):
@@ -232,7 +233,12 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
                                  "model": "sawii-persona", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                                  **extra}
                         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
+              except Exception as exc:  # noqa: BLE001
+                log.exception("chat stream failed")
+                err = {"error": {"message": f"internal error: {type(exc).__name__}",
+                                 "type": type(exc).__name__}}
+                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+              yield "data: [DONE]\n\n"
             return StreamingResponse(gen(), media_type="text/event-stream",
                                      headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         out = await mind.chat(persona["id"], text, surface=surface)
@@ -365,7 +371,10 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         persona = await persona_or_401(request)
         if not persona:
             return _err(401, "invalid persona key")
-        wait = min(30.0, max(0.0, float(request.query_params.get("wait", "0") or 0)))
+        try:
+            wait = min(30.0, max(0.0, float(request.query_params.get("wait", "0") or 0)))
+        except (TypeError, ValueError):
+            wait = 0.0
         deadline = time.monotonic() + wait
         while True:
             rows = await mind.store.all("SELECT id, text, reason, channel, created_at FROM outbox WHERE persona_id = ? "
@@ -387,6 +396,8 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         async def gen():
             try:
                 yield "retry: 3000\n\n"
+                p = persona
+                ticks = 0
                 while True:
                     try:
                         ev = await asyncio.wait_for(q.get(), timeout=1.0)
@@ -394,10 +405,18 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
                             await mind.store.update("outbox", ev["id"], status="read")
                         yield f"event: {ev['type']}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
                     except asyncio.TimeoutError:
-                        p = await identity.get_persona(mind.store, pid)
-                        c = Clock(started_at=now(), last_reply_at=p["last_reply_at"], last_user_at=p["last_user_at"],
-                                  tz=p["timezone"])
-                        yield f"event: clock\ndata: {json.dumps(c.snapshot())}\n\n"
+                        # The clock tick used to hit the DB once per second, per open
+                        # connection. The client interpolates its own counter from the
+                        # last frame, so a refresh every 5s is plenty and cuts the
+                        # per-connection query rate by 5x.
+                        ticks += 1
+                        if ticks % 5 == 0:
+                            fresh = await identity.get_persona(mind.store, pid)
+                            if fresh:
+                                p = fresh
+                            c = Clock(started_at=now(), last_reply_at=p["last_reply_at"],
+                                      last_user_at=p["last_user_at"], tz=p["timezone"])
+                            yield f"event: clock\ndata: {json.dumps(c.snapshot())}\n\n"
                     if await request.is_disconnected():
                         break
             finally:
@@ -460,7 +479,10 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
                 log.warning("reply delivery failed on %s: %s", channel, exc)
 
     async def hook_twilio(request: Request):
-        form = dict(await request.form())
+        try:
+            form = dict(await request.form())
+        except Exception:  # noqa: BLE001
+            return _err(400, "bad form")
         url = settings.public_base_url.rstrip("/") + request.url.path
         if not twilio_signature_ok(settings.twilio_token, url, form, request.headers.get("x-twilio-signature", "")):
             return _err(403, "bad signature")
@@ -477,7 +499,10 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         if not settings.telegram_secret or not hmac.compare_digest(
                 request.headers.get("x-telegram-bot-api-secret-token", ""), settings.telegram_secret):
             return _err(403, "bad secret")
-        data = await body_json(request)
+        try:
+            data = await body_json(request)
+        except (ValueError, json.JSONDecodeError):
+            return _err(400, "bad body")
         msg = data.get("message") or {}
         chat_id = str((msg.get("chat") or {}).get("id", ""))
         persona = await identity.find_by_contact(mind.store, "telegram", chat_id)
@@ -516,7 +541,10 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         if not settings.email_inbound_secret or not hmac.compare_digest(
                 request.query_params.get("secret", ""), settings.email_inbound_secret):
             return _err(403, "bad secret")
-        data = await body_json(request)
+        try:
+            data = await body_json(request)
+        except (ValueError, json.JSONDecodeError):
+            return _err(400, "bad body")
         sender = str(data.get("from", "")).strip()
         if "<" in sender:
             sender = sender.split("<", 1)[1].rstrip(">")

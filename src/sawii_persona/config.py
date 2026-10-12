@@ -42,6 +42,12 @@ class ModelEndpoint:
     api_key: str
     model: str
     timeout: float = 60.0
+    # Reasoning models (Qwen3, DeepSeek-R1, ...) spend tens of seconds emitting a
+    # hidden "thinking" stream (delta.reasoning) before the answer. That thinking
+    # is the single biggest latency cost in a turn - measured at 26-74s per reply
+    # vs ~3s with it off. We ask the provider to skip it; if the provider does not
+    # support the flag we silently fall back (see llm.py).
+    no_think: bool = True
 
     @property
     def configured(self) -> bool:
@@ -57,6 +63,7 @@ def _endpoint(prefix: str, *, model: str, base: str = FEATHERLESS, timeout: floa
         api_key=api_key,
         model=_env(f"{prefix}_MODEL", model),
         timeout=_float(f"{prefix}_TIMEOUT", timeout),
+        no_think=_bool("DISABLE_THINKING", True),
     )
 
 
