@@ -69,11 +69,6 @@ class Settings:
     # --- security ----------------------------------------------------------
     admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", ""))
     public_base_url: str = field(default_factory=lambda: _env("PUBLIC_BASE_URL", "http://localhost:8800"))
-    # Browser origins allowed to call the API (the companion app, a web client).
-    # "*" by default so the API works from any device without setup; lock it
-    # down with SAWII_CORS_ORIGINS=https://app.example.com,https://other.example.
-    cors_origins: list[str] = field(default_factory=lambda: [
-        o.strip() for o in _env("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"])
 
     # --- the three lobes + helpers ----------------------------------------
     # A: the voice. Persona-vacant base prompt; plug-and-play fine-tuned model.

@@ -24,7 +24,6 @@ import uuid
 from collections import defaultdict, deque
 
 from starlette.applications import Starlette
-from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
@@ -46,68 +45,6 @@ from ..voice.realtime import SpeechIO, VoiceSession, parse_frame
 log = logging.getLogger(__name__)
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
 MAX_BODY = 256_000
-
-# Compress anything above this many bytes. Below it the encoding overhead and
-# the extra CPU aren't worth it. Streaming SSE is never gzipped (it would
-# buffer the stream and destroy time-to-first-token).
-GZIP_MIN_BYTES = 1024
-# Only these content types are compressible. Keeps binary/audio/image alone.
-_GZIP_TYPES = ("application/json", "text/", "application/javascript", "image/svg+xml")
-
-
-class GZipMiddleware:
-    """ASGI compression middleware that deliberately skips SSE.
-
-    Starlette's own GZipMiddleware will buffer a `text/event-stream` body to
-    compress it, which stalls token streaming. This variant checks the
-    response's content-type and passes streams through untouched.
-    """
-
-    def __init__(self, app, minimum_size: int = GZIP_MIN_BYTES):
-        self.app = app
-        self.minimum_size = minimum_size
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        import gzip as _gzip
-
-        # Buffer non-streaming bodies and gzip them at the end. Streaming
-        # responses (more_body=True, e.g. SSE) pass through untouched so we
-        # never stall token streaming.
-        started: dict = {}
-
-        async def send2(message):
-            if message["type"] == "http.response.start":
-                started["status"] = message["status"]
-                started["headers"] = list(message.get("headers", []))
-                started["ctype"] = next((v.decode("latin-1") for k, v in started["headers"]
-                                         if k.lower() == b"content-type"), "").lower()
-                started["started"] = False
-                return
-            if message["type"] == "http.response.body":
-                body = message.get("body", b"")
-                more = message.get("more_body", False)
-                if not more and len(body) >= self.minimum_size and \
-                        any(t in started["ctype"] for t in _GZIP_TYPES) and \
-                        "text/event-stream" not in started["ctype"]:
-                    packed = _gzip.compress(body, 6)
-                    headers = [(k, v) for k, v in started["headers"] if k.lower() != b"content-length"]
-                    headers += [(b"content-encoding", b"gzip"), (b"content-length", str(len(packed)).encode())]
-                    headers += [(b"vary", b"accept-encoding")]
-                    await send({"type": "http.response.start", "status": started["status"], "headers": headers})
-                    await send({"type": "http.response.body", "body": packed})
-                    return
-                if not started["started"]:
-                    await send({"type": "http.response.start", "status": started["status"],
-                                "headers": started["headers"]})
-                    started["started"] = True
-                await send(message)
-                return
-            await send(message)
-
-        await self.app(scope, receive, send2)
 
 
 class RateLimiter:
@@ -135,24 +72,6 @@ def _bearer(request_or_ws) -> str:
 
 def _err(status: int, msg: str) -> JSONResponse:
     return JSONResponse({"error": {"message": msg}}, status_code=status)
-
-
-# Cache the built-in web app's HTML in memory, keyed by mtime so edits are
-# picked up without a restart but requests never hit the disk.
-_WEB_CACHE: dict[str, object] = {"mtime": -1.0, "html": ""}
-
-
-def _load_web_html() -> str:
-    path = os.path.join(WEB_DIR, "index.html")
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        return _WEB_CACHE.get("html") or "<!doctype html><title>Sawii Persona</title><p>app not installed</p>"
-    if mtime != _WEB_CACHE["mtime"]:
-        with open(path, encoding="utf-8") as fh:
-            _WEB_CACHE["html"] = fh.read()
-        _WEB_CACHE["mtime"] = mtime
-    return _WEB_CACHE["html"]  # type: ignore[return-value]
 
 
 class Runtime:
@@ -192,19 +111,11 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
 
     # ------------------------------------------------------------------ basics
     async def health(request):
-        # Cheap liveness probe: must never touch the DB or model endpoints, and
-        # must never raise. (A crash here makes Railway kill an otherwise
-        # healthy container.) Deep-lane availability is reported, not assumed.
-        workshop = "model"
-        try:
-            deep = getattr(mind, "deep", None)
-            if deep is not None:
-                workshop = "openhands" if getattr(deep.worker_factory(), "name", "") == "openhands" else "model"
-        except Exception:  # noqa: BLE001
-            workshop = "unavailable"
         return JSONResponse({"ok": True, "time": now(), "channels": rt.channels.available(),
                              "voice": {"asr": rt.speech.has_asr, "tts": rt.speech.has_tts},
-                             "embedder": mind.embedder.model, "workshop": workshop})
+                             "embedder": mind.embedder.model,
+                             "workshop": "openhands" if getattr(mind.deep.worker_factory(), "name", "") == "openhands"
+                             else "model"})
 
     async def health_subsystems(request):
         """Per-subsystem alive/degraded/dead view. Reads the mind's health
@@ -234,11 +145,8 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         return JSONResponse({"ok": summary["ok"], "summary": summary, "subsystems": subs})
 
     async def web_app(request):
-        # Serve from memory; re-read only when the file changes (dev) so the
-        # disk is not touched on every app load. The file read is off the event
-        # loop either way.
-        html = await asyncio.to_thread(_load_web_html)
-        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+        with open(os.path.join(WEB_DIR, "index.html"), encoding="utf-8") as fh:
+            return HTMLResponse(fh.read())
 
     async def models(request):
         return JSONResponse({"object": "list", "data": [{"id": "sawii-persona", "object": "model",
@@ -653,16 +561,6 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         Route("/v1/lane/questions", lane_question, methods=["POST"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
-    # Order matters: CORS outermost so preflight/errors still carry headers,
-    # then gzip, then the app.
-    app.add_middleware(GZipMiddleware)
-    app.add_middleware(CORSMiddleware,
-                       allow_origins=settings.cors_origins,
-                       allow_credentials=False,
-                       allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-                       allow_headers=["*"],
-                       expose_headers=["*"],
-                       max_age=600)
     app.state.runtime = rt
     return app
 
