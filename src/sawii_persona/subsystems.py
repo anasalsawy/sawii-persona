@@ -51,14 +51,21 @@ class SubsystemHealth:
         now_mono = time.monotonic()
         total = self.success_count + self.error_count
         rate = self.success_count / total if total else None
+        # A subsystem that has never been exercised is *idle*, not dead. Reporting
+        # idle subsystems as dead made /health/subsystems cry wolf on every fresh
+        # boot (all six "dead" with zero calls) and hid real failures in the noise.
+        idle = total == 0
         alive = self.last_success_at is not None and (
             now_mono - self.last_success_at < 24 * 3600)
         degraded = (self.last_error_at is not None and self.last_success_at is not None
                     and self.last_error_at > self.last_success_at)
+        status = "idle" if idle else ("degraded" if degraded else ("alive" if alive else "dead"))
         return {
             "name": self.name,
             "alive": alive,
             "degraded": degraded,
+            "idle": idle,
+            "status": status,
             "last_success_at": self.last_success_wall,
             "last_error_at": self.last_error_wall,
             "age_since_success_s": (now_mono - self.last_success_at) if self.last_success_at else None,
@@ -88,7 +95,8 @@ class Registry:
     def summary(self) -> dict:
         """Overall health: ok if every known subsystem is alive and not degraded."""
         snaps = [sub.snapshot() for sub in self._subs.values()]
-        ok = all(s["alive"] and not s["degraded"] for s in snaps) if snaps else True
-        dead = [s["name"] for s in snaps if not s["alive"]]
-        degraded = [s["name"] for s in snaps if s["degraded"]]
-        return {"ok": ok, "dead": dead, "degraded": degraded, "count": len(snaps)}
+        dead = [s["name"] for s in snaps if s["status"] == "dead"]
+        degraded = [s["name"] for s in snaps if s["status"] == "degraded"]
+        idle = [s["name"] for s in snaps if s["status"] == "idle"]
+        ok = not dead and not degraded
+        return {"ok": ok, "dead": dead, "degraded": degraded, "idle": idle, "count": len(snaps)}
