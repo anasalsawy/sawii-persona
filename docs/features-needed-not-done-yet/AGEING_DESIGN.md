@@ -20,14 +20,6 @@ B is the persistent verifier, the teacher that production LLMs never have.
 - THE JOURNAL (spine): every update appended as an immutable entry with its trigger exchange.
   The day must be replayable and revertible. No journal = no honest night.
 
-### Two layers, two timescales (biology-mirrored)
-- FAST layer (hippocampus): a resident LoRA adapter, updated live, every exchange. Holds the
-  week: mood, temperament, current customer patterns. Grain-of-sand writes — each exchange
-  moves weights ~1e-6 vs magnitudes ~1e-2..1, so one event CANNOT scar the system; ~10^4
-  same-direction pushes are needed for a visible shift. Weight-space is itself the low-pass
-  filter: noise cancels, patterns accumulate.
-- SLOW layer (cortex): the merged base + long-lived adapter. Only what the night pass promotes
-  gets here. Character, persona, reflexes. Changes weeks-over-weeks, never hours-over-hours.
 
 ### NIGHT RUN (consolidation — the court, not the classroom)
 Triggered offline (idle/schedule), reads the day's closed journal:
