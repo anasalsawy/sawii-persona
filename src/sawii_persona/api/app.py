@@ -36,6 +36,7 @@ from .. import emotion, identity
 from ..channels.adapters import CHANNELS, Channels, twilio_signature_ok
 from ..config import Settings, load_settings
 from ..lanes.deep import attach as attach_deep
+from ..life import anchor
 from ..life.finetune import FineTuner
 from ..life.initiative import Initiative
 from ..life.sleep import Sleep
@@ -330,6 +331,19 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
             return _err(401, "invalid persona key")
         return JSONResponse({"open": await mind.memory.open_loops(persona["id"])})
 
+    async def anchor_view(request):
+        """The wrongness dataset C keeps, and its rehearsal history. Read-only:
+        this is the outside the mind cannot forge (life/anchor.py)."""
+        persona = await persona_or_401(request)
+        if not persona:
+            return _err(401, "invalid persona key")
+        cases = await anchor.wrong_cases(mind.store, persona["id"])
+        runs = await mind.store.all(
+            "SELECT cases, passed, score, created_at FROM anchor_runs WHERE persona_id = ? "
+            "ORDER BY id DESC LIMIT 30", persona["id"])
+        return JSONResponse({"cases": cases, "runs": runs, "score": persona.get("anchor_score"),
+                             "at": persona.get("anchor_at")})
+
     async def sleep_now(request):
         persona = await persona_or_401(request)
         if not persona:
@@ -587,6 +601,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         Route("/v1/persona/memory", memory_view),
         Route("/v1/persona/memory/{layer_id}", memory_wipe, methods=["DELETE"]),
         Route("/v1/persona/loops", loops_view),
+        Route("/v1/persona/anchor", anchor_view),
         Route("/v1/persona/sleep", sleep_now, methods=["POST"]),
         Route("/v1/persona/subconscious", subconscious_view),
         Route("/v1/deep", deep_submit, methods=["POST"]),

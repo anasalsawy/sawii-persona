@@ -106,6 +106,26 @@ mechanism — it is a question about reality:
 This is tracked in `10-open-questions.md`. It is the owner's call, and it is the only unresolved
 piece of the design.
 
+## What is built now (the first meters of wire)
+
+The full loop is not built. The *structure* is, and it is honest about which part is which:
+
+| Piece | State |
+|---|---|
+| **The verifier** | ✅ built. C judges every answer; the verdict is the record of truth. |
+| **The wrongness dataset** | ✅ built. Every case C judged wrong is kept, joined to what was actually said. |
+| **The rehearsal** | ✅ built. During sleep the dataset is replayed and scored — the **anchor** (`anchor_runs`). |
+| **The update** | ⚠️ partially built. `life/finetune.py` bakes the day's juice into A's weights on a schedule; it is not yet gated by the anchor. |
+| **The live update** | ⬜ not built. Needs A on weights we hold, and the anchor trusted first. |
+
+So: the verifier exists, it keeps a record, and the record is rehearsed every night. What is missing is
+**the wire from the anchor to the update** — the gate that refuses a night's learning when the mind has
+drifted — and then the live version.
+
+Nothing here forces the mind, and nothing here filters it. The anchor is not a filter: it is the world
+the mind cannot forge, which is the one thing the owner has not yet decided about (see §"the world"
+above and `10-open-questions.md`).
+
 ## The spirit, kept verbatim
 
 > *"Naturally, naturally, naturally — only."*

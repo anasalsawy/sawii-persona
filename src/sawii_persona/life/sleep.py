@@ -8,6 +8,8 @@
     mirror      C watches A's own replies for habits A cannot see in itself
     calibrate   B maps where A tends to be wrong, so A is careful exactly there
     thoughts    stale inner thoughts decay
+    anchor      C replays the wrongness dataset it has kept - the outside the mind
+                cannot forge, and the seed of the gate on the night's learning (anchor.py)
     juice       the day's raw high-variance turns are baked into A's weights (finetune.py)
 """
 from __future__ import annotations
@@ -20,6 +22,7 @@ from ..llm import extract_json, strip_reasoning
 from ..profiles import persona_frame
 from ..store import jload, now
 from ..timesense import local_dt
+from . import anchor
 from .finetune import FineTuner
 
 log = logging.getLogger(__name__)
@@ -42,7 +45,7 @@ class Sleep:
         pid = persona["id"]
         report: dict = {"persona": pid}
         since = max(persona["narrative_at"], persona["last_sleep_at"])
-        for step in (self._narrative, self._psyche, self._dream, self._mirror, self._calibrate):
+        for step in (self._narrative, self._psyche, self._dream, self._mirror, self._calibrate, self._anchor):
             try:
                 report.update(await step(persona, since))
             except Exception as exc:  # noqa: BLE001
@@ -185,6 +188,12 @@ class Sleep:
                  if str(a).strip()]
         await self.mind.store.update("personas", pid, calibration="; ".join(areas[:4]))
         return {"calibration": f"{len(areas[:4])} areas"}
+
+    async def _anchor(self, persona: dict, since: float) -> dict:
+        """C rehearses the wrongness dataset: ask A the same things again, verify,
+        score. The seed of the gate that will refuse a night's learning when the
+        mind has drifted - and the outside the verifier itself is checked against."""
+        return await anchor.anchor_run(self.mind, persona)
 
     async def _audit(self, text: str, source: str) -> list[str]:
         """C verifies something the mind wrote about itself or the person; returns sentences to strike."""

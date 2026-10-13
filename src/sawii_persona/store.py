@@ -170,6 +170,20 @@ CREATE TABLE IF NOT EXISTS verdicts (
 );
 
 -- The thought stream: an inner monologue the companion has and mostly never says.
+-- The anchor: C's wrongness dataset, replayed during sleep. This is the outside
+-- the mind cannot forge - the seed of the gate that will refuse a night's
+-- learning when the mind has drifted. One row per rehearsal, so the score can
+-- be watched over weeks.
+CREATE TABLE IF NOT EXISTS anchor_runs (
+    id          INTEGER PRIMARY KEY,
+    persona_id  INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+    cases       INTEGER NOT NULL DEFAULT 0,
+    passed      INTEGER NOT NULL DEFAULT 0,
+    score       REAL,
+    detail      TEXT NOT NULL DEFAULT '[]',
+    created_at  REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS thoughts (
     id          INTEGER PRIMARY KEY,
     persona_id  INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
@@ -249,6 +263,8 @@ MIGRATIONS = [
     ("personas", "c_expect", "TEXT NOT NULL DEFAULT ''"),
     ("personas", "habits", "TEXT NOT NULL DEFAULT ''"),
     ("personas", "calibration", "TEXT NOT NULL DEFAULT ''"),
+    ("personas", "anchor_score", "REAL NOT NULL DEFAULT 0"),
+    ("personas", "anchor_at", "REAL NOT NULL DEFAULT 0"),
 ]
 
 
