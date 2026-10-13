@@ -10,6 +10,8 @@
     thoughts    stale inner thoughts decay
     anchor      C replays the wrongness dataset it has kept - the outside the mind
                 cannot forge, and the seed of the gate on the night's learning (anchor.py)
+    cup         records already consolidated into the weights wear away one rung -
+                and only while the raw record is over budget (memory/evaporate.py)
     juice       the day's raw high-variance turns are baked into A's weights (finetune.py)
 """
 from __future__ import annotations
@@ -22,6 +24,7 @@ from ..llm import extract_json, strip_reasoning
 from ..profiles import persona_frame
 from ..store import jload, now
 from ..timesense import local_dt
+from ..memory import evaporate
 from . import anchor
 from .finetune import FineTuner
 
@@ -45,16 +48,26 @@ class Sleep:
         pid = persona["id"]
         report: dict = {"persona": pid}
         since = max(persona["narrative_at"], persona["last_sleep_at"])
-        for step in (self._narrative, self._psyche, self._dream, self._mirror, self._calibrate, self._anchor):
+        for step in (self._narrative, self._psyche, self._dream, self._mirror, self._calibrate,
+                     self._anchor):
             try:
                 report.update(await step(persona, since))
             except Exception as exc:  # noqa: BLE001
                 log.warning("sleep step %s failed: %s", step.__name__, exc)
                 report[step.__name__] = f"failed: {exc}"[:200]
-        # Stubborn memory: nothing is faded or decayed on time. Hypotheses only move on real evidence
-        # (confirm/contradict); thoughts stay pending until acted on, no silent expiry.
+        # Stubborn memory, still: nothing live is faded or decayed on time. Hypotheses only move on
+        # real evidence (confirm/contradict); thoughts stay pending until acted on. What the cup
+        # lets go of is different - only the RAW RECORD of what has already been consolidated into
+        # the weights, only while over budget, and only one rung per night.
         report["faded_hypotheses"] = 0
         report["decayed_thoughts"] = 0
+        try:
+            report["cup"] = await evaporate.evaporate(
+                self.mind.store, pid, budget=self.mind.s.cup_chars,
+                protect_days=self.mind.s.cup_protect_days)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cup failed: %s", exc)
+            report["cup"] = f"failed: {exc}"[:200]
         try:
             report["subconscious"] = await self.ft.consolidate(persona)
         except Exception as exc:  # noqa: BLE001

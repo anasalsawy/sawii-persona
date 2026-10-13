@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS layers (
     recalled_count INTEGER NOT NULL DEFAULT 0,
     last_recalled_at REAL NOT NULL DEFAULT 0,
     tender      INTEGER NOT NULL DEFAULT 0,      -- C: painful; held back unless the person raises it
+    fidelity    TEXT NOT NULL DEFAULT 'full',   -- full|gist|trace: the overflowing cup
+    evaporated_at REAL NOT NULL DEFAULT 0,
     created_at  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_layers_p ON layers(persona_id, status, id);
@@ -265,6 +267,8 @@ MIGRATIONS = [
     ("personas", "calibration", "TEXT NOT NULL DEFAULT ''"),
     ("personas", "anchor_score", "REAL NOT NULL DEFAULT 0"),
     ("personas", "anchor_at", "REAL NOT NULL DEFAULT 0"),
+    ("layers", "fidelity", "TEXT NOT NULL DEFAULT 'full'"),
+    ("layers", "evaporated_at", "REAL NOT NULL DEFAULT 0"),
 ]
 
 

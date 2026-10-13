@@ -78,6 +78,10 @@ def render_event(layers: list[dict], tz: str, label: str = "") -> str:
     for r in layers:
         tag = f"{r['layer']}·{r['author']}" + (f"·{r['kind']}" if r["layer"] in ("note", "reading") else "")
         line = f"   [{tag}] {r['text']}"
+        # The overflowing cup: a record can be a gist or a trace. Say so, so the
+        # mind knows the difference between remembering and half-remembering.
+        if r.get("fidelity") == "gist":
+            line += "  (the details have worn a little)"
         if r["quote"] and r["quote"] not in r["text"]:
             line += f' — they said: "{r["quote"]}"'
         interp = jload(r["interpretations"], [])

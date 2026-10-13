@@ -125,6 +125,12 @@ class Settings:
     juice_floor: float = field(default_factory=lambda: _float("JUICE_FLOOR", 0.55))
     buffer_rows: int = field(default_factory=lambda: _int("BUFFER_ROWS", 2000))
     bowl_ratio: float = field(default_factory=lambda: _float("BOWL_RATIO", 0.9))
+
+    # --- the overflowing cup --------------------------------------------------
+    # The raw-record budget per persona. Nothing evaporates until the cup is over
+    # it, and only records that are already consolidated (see life/evaporate.py).
+    cup_chars: int = field(default_factory=lambda: _int("CUP_CHARS", 400_000))
+    cup_protect_days: float = field(default_factory=lambda: _float("CUP_PROTECT_DAYS", 14.0))
     replay_ratio: float = field(default_factory=lambda: _float("REPLAY_RATIO", 0.2))
     finetune_min_examples: int = field(default_factory=lambda: _int("FINETUNE_MIN_EXAMPLES", 40))
     finetune_provider: str = field(default_factory=lambda: _env("FINETUNE_PROVIDER", "none"))  # none|fireworks|command

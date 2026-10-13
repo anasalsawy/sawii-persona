@@ -62,4 +62,39 @@ Every layer is quotable and auditable. The person can **see exactly what the com
 **wipe anything**, at any time, per persona. A companion that remembers everything must let you see
 and remove everything, or it becomes uncanny.
 
+## The overflowing cup - what may wear away
+
+Memory here is stubborn by design: nothing live is faded on time, no layer is evicted for space, no
+hypothesis loses confidence because a calendar moved. That promise stands, and it is tested.
+
+The cup is the other half, and it is **not forgetting**. A mind that ages must also be able to put
+something down. Once a moment is *consolidated* - baked into the weights, or carried by the narrative
+the mind wakes up into - the raw record is no longer the only thing holding it. It may wear away the
+way a person's does: nobody remembers the exact words of a conversation from three years ago; they
+remember that it happened, and what it meant, because it is part of them now.
+
+```
+   full    the record as written
+    │      (the person's exact words are kept)
+    ▼
+   gist    the anchor and the head of it - the details have worn a little
+    │      (the person's exact words are STILL kept)
+    ▼
+   trace   that it happened, when, and what it was about - the details are gone
+```
+
+One rung per night. Only while the raw record is over the cup's budget. Only for records that have
+been consolidated, and least recently recalled.
+
+**Never touched:** a tender mark, a hypothesis, an entity, an open loop, a standing rule, a thought,
+anything recalled inside the protection window - and the journal of turns, which is not on the ladder
+at all.
+
+Why it matters: the mind keeps running without getting heavier, without getting slower, and without
+spending tokens re-reading its own childhood. The cup is not a limit on memory. It is a limit on the
+**raw record**, and it only ever overflows with what has already been absorbed.
+
+Recall renders each rung honestly - "the details have worn a little" - so the mind knows the
+difference between remembering and half-remembering, and never states a gist as if it were a quote.
+
 → next: **05 · Feeling and time.**

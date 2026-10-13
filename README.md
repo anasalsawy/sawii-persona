@@ -291,7 +291,7 @@ lobe does: a memory becomes an "oh wait" follow-up (#2); a live check or gut rea
 *Code:* `store.py` (schema), `memory/records.py` (writing), `memory/grounding.py` (quote-or-die),
 `memory/recall.py` (reading).
 
-### 6.1 Stubborn memory - nothing is forgotten, ever
+### 6.1 Stubborn memory - and the overflowing cup
 Memory is persistent, non-relenting, fixed, absolute. The policy, by design and by test:
 - The verbatim journal (`turns`) is **never rewritten, never summarised, never trimmed.**
 - Every active `layer` is considered on every turn - there is **no silent recall cap**. (At scale
@@ -302,13 +302,28 @@ Memory is persistent, non-relenting, fixed, absolute. The policy, by design and 
   stay pending until acted on.
 - The subconscious buffer **has no overflowing bowl.** Juice is never evicted for space and never
   compressed down. The byte-exact archive (`ndsmc-raw/2`) + the baked juice both live forever.
-- Tenderness is a boolean that does not age.
+- Tenderness is a boolean that does not age - and a tender mark is **never** touched by the cup.
 - Supersession, when it fires, **marks the old row superseded** (status change, kept and linked).
   Nothing is ever deleted on supersede.
 
-What *does* run every night is still just the summary layer: A's self-narrative and C's psych
-profile are rewritten (and B audits them to strike anything the raw record does not support). The
-raw record under them is untouched.
+**The overflowing cup** (`memory/evaporate.py`) is the one thing that wears away, and it is not
+forgetting. Once a moment is *consolidated* - baked into the weights, carried by the narrative - the
+raw record is no longer the only thing holding it, so it may wear away the way a person's memory
+does. The rules are the safety:
+
+| | |
+|---|---|
+| **Only over budget** | nothing happens until the raw record passes `SAWII_CUP_CHARS` (default 400k). Under it, every guarantee above stands untouched. |
+| **One rung per night** | `full -> gist -> trace`. Nothing evaporates in a single night. |
+| **Their words survive longest** | `gist` keeps the verbatim quote; only `trace` lets it go. |
+| **Consolidated first** | a turn that has been *baked* into the weights is carried by the mind itself, so its raw record goes first. |
+| **Never touched** | tender marks, hypotheses, entities, loops, rules, thoughts, anything recalled inside the protection window (`SAWII_CUP_PROTECT_DAYS`, default 14), and the journal of turns. |
+
+The reduction is local and deterministic - no model call, no cost. Recall renders each rung honestly,
+so the mind knows the difference between remembering and half-remembering.
+
+What *does* run every night is still just the summary layer: A's self-narrative and B's psych profile
+are rewritten (and C audits them to strike anything the raw record does not support).
 
 ### 6.2 One record per moment, three layers deep
 Each turn creates one `event`; layers hang off it, each written by exactly one lobe:
