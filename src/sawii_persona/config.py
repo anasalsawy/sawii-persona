@@ -133,16 +133,6 @@ class Settings:
     fireworks_base_model: str = field(default_factory=lambda: _env("FIREWORKS_BASE_MODEL", "accounts/fireworks/models/qwen3-8b"))
     finetune_command: str = field(default_factory=lambda: _env("FINETUNE_COMMAND", ""))
 
-    # --- harmonist (C's architectural-fine-tune runtime) ---------------------
-    # When the system has been idle for harmonist_idle_minutes, run one
-    # harmonist pass: re-run the adversarial corpus, score, propose edits
-    # via C's LLM, accept or revert. Cooldown between passes.
-    harmonist_idle_minutes: float = field(default_factory=lambda: _float("HARMONIST_IDLE_MINUTES", 30.0))
-    harmonist_cooldown_minutes: float = field(default_factory=lambda: _float("HARMONIST_COOLDOWN_MINUTES", 60.0))
-    harmonist_budget_per_pass: int = field(default_factory=lambda: _int("HARMONIST_BUDGET", 3))
-    harmonist_lock_on_converge: bool = field(default_factory=lambda: _bool("HARMONIST_LOCK", False))
-    harmonist_log_path: str = field(default_factory=lambda: _env("HARMONIST_LOG", "./data/harmonist.log"))
-
     # --- voice -------------------------------------------------------------
     asr: ModelEndpoint = field(default_factory=lambda: ModelEndpoint(
         _env("ASR_BASE_URL", ""), _env("ASR_API_KEY", ""), _env("ASR_MODEL", "whisper-1")))
