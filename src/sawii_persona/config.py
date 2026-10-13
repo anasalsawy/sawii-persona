@@ -76,6 +76,11 @@ class Settings:
     # --- security ----------------------------------------------------------
     admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", ""))
     public_base_url: str = field(default_factory=lambda: _env("PUBLIC_BASE_URL", "http://localhost:8800"))
+    # Comma-separated allowed origins for the native shells (Capacitor/Tauri
+    # load from capacitor://localhost, tauri://localhost, http://localhost) and
+    # any separately hosted web build. "*" is safe here because auth is always a
+    # bearer persona key - never a cookie. Empty string = no CORS middleware.
+    cors_origins: str = field(default_factory=lambda: _env("CORS_ORIGINS", "*"))
 
     # --- the three lobes + helpers ----------------------------------------
     # A: the voice. Persona-vacant base prompt; plug-and-play fine-tuned model.

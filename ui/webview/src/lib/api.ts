@@ -21,24 +21,18 @@ export type EventHandlers = {
 	onError?: (detail: string) => void;
 };
 
-const KEY_STORAGE = "sawii_key";
+// The backend may be same-origin (browser build served by the server) or remote
+// (the desktop / Android / iOS shells, which load bundled assets from
+// capacitor://localhost or tauri://localhost and call the deployed server).
+// Set VITE_SAWII_API_BASE at build time to point the shells at a host.
+export const API_BASE = ((import.meta as unknown as { env?: Record<string, string> }).env
+	?.VITE_SAWII_API_BASE || "").replace(/\/+$/, "");
 
-export function readKey(): string {
-	try {
-		return localStorage.getItem(KEY_STORAGE) || "";
-	} catch {
-		return "";
-	}
+function url(path: string): string {
+	return `${API_BASE}${path}`;
 }
 
-export function writeKey(key: string): void {
-	try {
-		if (key) localStorage.setItem(KEY_STORAGE, key);
-		else localStorage.removeItem(KEY_STORAGE);
-	} catch {
-		/* private mode */
-	}
-}
+export { readKey, writeKey, hydrateKey } from "./store";
 
 async function parseError(res: Response): Promise<string> {
 	try {
@@ -66,20 +60,20 @@ export class Sawii {
 	}
 
 	async get<T = Record<string, unknown>>(path: string): Promise<T> {
-		const res = await fetch(path, { headers: this.headers() });
+		const res = await fetch(url(path), { headers: this.headers() });
 		if (!res.ok) throw new Error(await parseError(res));
 		return (await res.json()) as T;
 	}
 
 	async put<T = Record<string, unknown>>(path: string, body: unknown): Promise<T> {
-		const res = await fetch(path, { method: "PUT", headers: this.headers(), body: JSON.stringify(body) });
+		const res = await fetch(url(path), { method: "PUT", headers: this.headers(), body: JSON.stringify(body) });
 		if (!res.ok) throw new Error(await parseError(res));
 		return (await res.json()) as T;
 	}
 
 	/** One turn. The server owns the history; only the newest message matters. */
 	async send(text: string, h: ChatHandlers, signal?: AbortSignal): Promise<void> {
-		const res = await fetch("/v1/chat/completions", {
+		const res = await fetch(url("/v1/chat/completions"), {
 			method: "POST",
 			headers: this.headers(),
 			body: JSON.stringify({ model: "sawii-persona", stream: true, messages: [{ role: "user", content: text }] }),
@@ -127,8 +121,7 @@ export class Sawii {
 
 	/** The live channel: every event the lobes publish, per persona. */
 	events(h: EventHandlers): () => void {
-		const url = `/v1/events?key=${encodeURIComponent(this.key)}`;
-		const es = new EventSource(url);
+		const es = new EventSource(url(`/v1/events?key=${encodeURIComponent(this.key)}`));
 		const names = [
 			"clock", "message", "inner", "memory_updated", "verdict",
 			"b_queued", "b_start", "b_done", "b_nudge", "b_delta",

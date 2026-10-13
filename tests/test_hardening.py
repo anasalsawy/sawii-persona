@@ -69,5 +69,22 @@ class HardeningTests(unittest.TestCase):
         self.assertTrue(r.json()["ok"])
 
 
+    def test_cors_allows_the_native_shells(self):
+        # The desktop / Android / iOS shells load bundled assets from
+        # capacitor://localhost or tauri://localhost and call this server
+        # cross-origin. Without CORS headers those builds cannot talk to the
+        # backend at all - so this locks the middleware in.
+        r = self.client.get("/health", headers={"Origin": "capacitor://localhost"})
+        self.assertEqual(r.headers.get("access-control-allow-origin"), "*")
+
+        pre = self.client.options("/v1/persona", headers={
+            "Origin": "tauri://localhost",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        })
+        self.assertLess(pre.status_code, 400)
+        self.assertEqual(pre.headers.get("access-control-allow-origin"), "*")
+
+
 if __name__ == "__main__":
     unittest.main()

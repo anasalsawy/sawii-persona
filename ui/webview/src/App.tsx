@@ -13,7 +13,7 @@ import { Message, MessageContent, MessageResponse } from "@/components/ai-elemen
 import { Composer } from "@/components/Composer";
 import { InterLobe } from "@/components/InterLobe";
 import { Workbench } from "@/components/Workbench";
-import { readKey, sawii } from "@/lib/api";
+import { hydrateKey, readKey, sawii } from "@/lib/api";
 import type { Clock, LobeEvent, Persona, Turn, Verdict, WorkItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -69,6 +69,27 @@ export default function App() {
 			setError(`That key was refused: ${(e as Error).message}`);
 		}
 	}
+
+	// Inside a native shell the key lives in the OS keychain, not the web store.
+	useEffect(() => {
+		let alive = true;
+		hydrateKey().then((stored) => {
+			if (!alive || !stored) return;
+			setKey(stored);
+			sawii.setKey(stored);
+			sawii
+				.get<Persona>("/v1/persona")
+				.then((p) => {
+					if (!alive) return;
+					setPersona(p);
+					setEntered(true);
+				})
+				.catch(() => {});
+		});
+		return () => {
+			alive = false;
+		};
+	}, []);
 
 	// clock + the live channel
 	useEffect(() => {

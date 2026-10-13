@@ -24,6 +24,8 @@ import uuid
 from collections import defaultdict, deque
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route, WebSocketRoute
@@ -597,7 +599,17 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         Route("/hooks/email", hook_email, methods=["POST"]),
         Route("/v1/lane/questions", lane_question, methods=["POST"]),
     ]
-    app = Starlette(routes=routes, lifespan=lifespan)
+    # CORS: the browser build is same-origin, but the desktop and mobile shells
+    # load bundled assets from capacitor://localhost / tauri://localhost and call
+    # this server cross-origin. Auth is a bearer key, never a cookie, so a
+    # permissive default is safe. See ui/PLATFORMS.md.
+    middleware = []
+    origins = [o.strip() for o in (settings.cors_origins or "").split(",") if o.strip()]
+    if origins:
+        middleware.append(Middleware(CORSMiddleware, allow_origins=origins,
+                                      allow_methods=["*"], allow_headers=["*"],
+                                      expose_headers=["*"], max_age=86400))
+    app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
     app.state.runtime = rt
     return app
 
