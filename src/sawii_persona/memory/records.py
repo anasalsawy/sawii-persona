@@ -25,7 +25,9 @@ from .grounding import ground
 
 log = logging.getLogger(__name__)
 
-LAYER_AUTHOR = {"fact": "A", "collateral": "B", "note": "C", "reading": "C", "afterthought": "B"}
+# One writer per layer, enforced on write. After the lobe swap (C verifies, B
+# feels) the psyche layers belong to B. C writes verdicts, not memory layers.
+LAYER_AUTHOR = {"fact": "A", "collateral": "B", "note": "B", "reading": "B", "afterthought": "B"}
 NOTE_KINDS = {"preference", "plan", "detail", "aside", "joke", "callback", "feeling", "promise", "event",
               "reading", "fact", "collateral", "afterthought"}
 SUPERSEDABLE = {"preference", "plan", "detail", "fact"}

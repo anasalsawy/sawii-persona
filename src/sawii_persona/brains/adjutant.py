@@ -1,7 +1,6 @@
-"""B - the adjutant. Runs after A answers (never blocks the person):
-private verification + collateral memory + open loops + conscience note +
-afterthoughts from late consults. Its verdict goes to A (integrity record),
-and to the person only if the operator turns that on.
+"""B - the adjutant (operations). Runs after A answers, never blocks the person:
+collateral memory, open loops, the conscience note, standing rules, afterthoughts.
+The verdict is no longer B's - verification moved to C (see docs/book/02).
 """
 from __future__ import annotations
 
@@ -28,12 +27,12 @@ def transcript(tail: list[dict], user_text: str, reply: str, limit: int = 6000) 
 
 
 async def review(llm: LLM, *, persona: dict, user_text: str, reply: str, tail: list[dict], recall_text: str,
-                 consults: list[dict], loops: list[dict], c_brief: str, at: float, a_chord: dict | None = None,
+                 consults: list[dict], loops: list[dict], psyche_brief: str, at: float, a_chord: dict | None = None,
                  rules: list[dict] | None = None) -> dict:
     tz = persona.get("timezone") or "UTC"
     parts = [f"Local time now: {local_dt(at, tz).isoformat(timespec='minutes')} ({tz})"]
-    if c_brief:
-        parts.append("Brief from C, the observer (as of last turn):\n" + c_brief)
+    if psyche_brief:
+        parts.append("Brief from the psyche lobe (as of last turn):\n" + psyche_brief)
     if loops:
         parts.append("Open loops:\n" + "\n".join(
             f"#{lp['id']} [{lp['kind']}] {lp['text']}" + (f" (due {local_dt(lp['due_at'], tz).isoformat(timespec='minutes')})"

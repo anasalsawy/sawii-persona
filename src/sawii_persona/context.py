@@ -33,8 +33,8 @@ class Scratch:
     conscience: str = ""
     correction: str = ""
     sudden: str = ""          # B found it after A had already answered ("oh wait...")
-    c_brief: str = ""
-    dissent: str = ""         # C reads the person differently from B
+    psyche_brief: str = ""      # the psyche lobe's (B) brief -> read by the verifier (C)
+    dissent: str = ""         # the psyche lobe reads the person differently from the verifier
     meter_carryforward: str = ""  # one line of reviewer feedback for next turn; classes + fixes, never the score
     lane_questions: str = ""  # pending questions from Maya's background working lane
     dropped: list = field(default_factory=list)  # things they said that A did not answer
@@ -103,13 +103,13 @@ def build_messages(*, persona: dict, clock: Clock, scratch: Scratch, integrity: 
     if brief:
         live += ["", "=== your adjutant (B), privately ==="] + brief
     if persona.get("psych_profile"):
-        live += ["", "=== your observer's (C) read of them - hunches, never labels ===", persona["psych_profile"]]
+        live += ["", "=== your adjutant's (B) read of them - hunches, never labels ===", persona["psych_profile"]]
     if scratch.dissent:
         live += ["", "=== your two inner minds disagree ===",
-                 f"Your adjutant (B) and your observer (C) read this differently. C: {scratch.dissent}",
+                 f"Your psyche (B) reads this differently from your verifier (C). B: {scratch.dissent}",
                  "If it matters, you may say you are of two minds - honestly, in your own words."]
     if persona.get("habits"):
-        live += ["", "=== habits your observer (C) sees in you that you cannot see yourself ===", persona["habits"]]
+        live += ["", "=== habits your adjutant (B) sees in you that you cannot see yourself ===", persona["habits"]]
     mood = jload(persona.get("mood"), {})
     if mood:
         live += ["", f"How you have been feeling: {emotion.render(mood)}."]

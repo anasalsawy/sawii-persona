@@ -85,7 +85,7 @@ class SleepTests(MindCase):
         await self.mind.chat(self.pid, "morning!")
         system = [c for c in self.mind.a.calls if not c["json_mode"]][-1]["messages"][0]["content"]
         self.assertIn("written by you at your last sleep", system)
-        self.assertIn("observer's (C) read", system)
+        self.assertIn("adjutant's (B) read", system)
 
     async def test_failed_training_keeps_juice_raw(self):
         self.settings.finetune_min_examples = 1

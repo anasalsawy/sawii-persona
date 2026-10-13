@@ -505,19 +505,21 @@ class Mind:
             # ---- A's fact layer (cheap, independent) runs alongside B
             diary_task = asyncio.create_task(self._diary(persona, user_text, reply)) if not failed else None
 
-            # ---- B: adjutant (operational review) + verifier (deception meter) run concurrently
+            # ---- C: the verifier (the verdict) + B: the adjutant (operations) run concurrently
             b_rev: dict = {}
             m: Meter | None = None
             if not failed:
                 transcript_text = adjutant.transcript(tail, user_text, reply)
+                # C verifies. It is handed what the psyche lobe sensed about the
+                # person last turn, so the verdict weighs the emotional read too.
                 verify_task = asyncio.create_task(verifier.verify(
-                    self.b, context=transcript_text, response_text=reply, events="",
-                    latest_request=user_text,
+                    self.c, context=transcript_text, response_text=reply, events="",
+                    latest_request=user_text, sensed=scratch.psyche_brief,
                     on_health=self.health_registry.get("verifier")))
                 try:
                     b_rev = await adjutant.review(self.b, persona=persona, user_text=user_text, reply=reply, tail=tail,
                                                   recall_text=recall_res.text, consults=consults, loops=loops,
-                                                  c_brief=scratch.c_brief, at=now(), a_chord=a_chord,
+                                                  psyche_brief=scratch.psyche_brief, at=now(), a_chord=a_chord,
                                                   rules=await self.memory.rules(pid))
                 except Exception as exc:  # noqa: BLE001
                     log.warning("B review failed: %s", exc)
@@ -542,14 +544,16 @@ class Mind:
                 verdict_out.setdefault("level", m.level)
                 verdict_out.setdefault("rationale", verdict_out.get("meter_rationale", ""))
                 if b_rev and b_rev.get("parsed"):
-                    await self._revisit(pid, event_id, turn_id, user_text, b_rev, sources)
+                    await self._revisit(pid, event_id, turn_id, user_text, m.level,
+                                             verdict_out.get('rationale', ''), sources)
             elif b_rev and b_rev.get("parsed"):
                 # Meter unavailable: fall back to adjutant's simpler verdict.
                 await self.memory.record_verdict(pid, turn_id, b_rev["level"], b_rev["rationale"],
                                                  b_rev["findings"])
                 verdict_out = {"level": b_rev["level"], "rationale": b_rev["rationale"],
                                "findings": b_rev["findings"]}
-                await self._revisit(pid, event_id, turn_id, user_text, b_rev, sources)
+                await self._revisit(pid, event_id, turn_id, user_text, b_rev['level'],
+                                     b_rev['rationale'], sources)
             if b_rev:
                 scratch.conscience = b_rev["conscience"]
                 if b_rev["regulate"]:  # A's own feeling is running hot: B steadies it before the next reply
@@ -558,7 +562,10 @@ class Mind:
                 from .memory.grounding import ground
                 scratch.dropped = [q for q in (ground(str(d.get("quote", "")), [user_text])
                                                for d in b_rev["dropped"]) if q][:3]
-                if b_rev["correction"] and b_rev["level"] in ("RED", "YELLOW"):
+                # The correction is B's to raise (operations); the LEVEL belongs to
+                # the verifier. Gating one on the other was a leftover from when B
+                # verified too.
+                if b_rev["correction"]:
                     scratch.correction = b_rev["correction"]
                     await self.store.insert("thoughts", persona_id=pid, text=b_rev["correction"], source="correction",
                                             score=0.9, ref=str(turn_id), created_at=now())
@@ -570,34 +577,35 @@ class Mind:
                 await self.memory.apply_loops(pid, b_rev["loops"], [user_text, reply, *sources],
                                               tz=persona["timezone"], turn_id=turn_id)
 
-            # ---- C: observer (sees B)
-            c_obs: dict = {}
+            # ---- B: the psyche (the feeling half; reads the verifier's verdict)
+            psy: dict = {}
             psyche_h = self.health_registry.get("psyche")
             if not failed:
                 try:
                     recalled = [r for r in await self._layers(pid, recall_res.layer_ids)]
-                    c_obs = await observer.observe(
-                        self.c, persona=persona, user_text=user_text, reply=reply, tail=tail, b_review=b_rev,
+                    psy = await observer.read_psyche(
+                        self.b, persona=persona, user_text=user_text, reply=reply, tail=tail,
+                        verdict=verdict_out or {},
                         hypotheses=await self.memory.hypotheses(pid), recalled=recalled,
                         effective_conf=lambda h: self.memory.effective_confidence(h, self.s.psyche_half_life_days))
                     # observe() returns parsed=False if JSON didn't parse. The
                     # LLM call itself may have succeeded (so a_llm reports ok)
                     # but C still produced nothing usable - mark psyche
                     # degraded rather than silently continuing.
-                    if c_obs.get("parsed"):
-                        psyche_h.ok(extra={"chord": c_obs.get("user_chord")})
+                    if psy.get("parsed"):
+                        psyche_h.ok(extra={"chord": psy.get("user_chord")})
                     else:
-                        psyche_h.fail("observer returned unparseable output")
+                        psyche_h.fail("the psyche lobe returned unparseable output")
                 except Exception as exc:  # noqa: BLE001
-                    log.warning("C observe failed: %s", exc)
+                    log.warning("psyche read failed: %s", exc)
                     psyche_h.fail(f"{type(exc).__name__}: {exc}")
             salience = 1
-            if c_obs:
-                chord = c_obs["user_chord"]
+            if psy:
+                chord = psy["user_chord"]
                 if chord:
                     await self.memory.set_event_chord(event_id, chord)
-                items = [{**n, "layer": "note", "author": "C"} for n in c_obs["notes"]]
-                items += [{**r, "layer": "reading", "author": "C", "kind": "reading"} for r in c_obs["readings"]]
+                items = [{**n, "layer": "note", "author": "B"} for n in psy["notes"]]
+                items += [{**r, "layer": "reading", "author": "B", "kind": "reading"} for r in psy["readings"]]
                 for it in items:
                     if not it.get("chord") and chord:
                         it["chord"] = chord
@@ -608,26 +616,26 @@ class Mind:
                 except Exception as exc:  # noqa: BLE001
                     mem_h.fail(f"add_layers: {type(exc).__name__}: {exc}")
                     raise
-                salience = max([1, *[int(n.get("salience", 1) or 1) for n in c_obs["notes"]
+                salience = max([1, *[int(n.get("salience", 1) or 1) for n in psy["notes"]
                                      if str(n.get("salience", "1")).isdigit()]])
-                await self.memory.apply_hypotheses(pid, c_obs["hypotheses"], sources)
-                for ent in c_obs["entities"]:
+                await self.memory.apply_hypotheses(pid, psy["hypotheses"], sources)
+                for ent in psy["entities"]:
                     from .memory.grounding import ground
                     q = ground(str(ent.get("quote", "")), sources)
                     if q:
                         await self.memory.upsert_entity(pid, str(ent.get("name", "")), str(ent.get("kind", "person")),
                                                         str(ent.get("account", "")), q)
                 allowed = set(recall_res.layer_ids)
-                for ri in c_obs["reinterpret"]:
+                for ri in psy["reinterpret"]:
                     try:
                         lid = int(ri.get("id"))
                     except (TypeError, ValueError):
                         continue
                     if lid in allowed:
                         await self.memory.reinterpret(pid, lid, str(ri.get("reading", "")))
-                scratch.c_brief = c_obs["brief_for_b"]
-                scratch.dissent = c_obs["disagree_with_b"] if b_rev else ""
-                await self.store.update("personas", pid, c_expect=c_obs["expect"])
+                scratch.psyche_brief = psy["brief_for_c"]
+                scratch.dissent = psy["disagree_with_verifier"] if verdict_out else ""
+                await self.store.update("personas", pid, c_expect=psy["expect"])
                 fresh = await get_persona(self.store, pid)
                 user_mood = emotion.blend(jload(fresh["user_mood"], {}), chord, 0.4) if chord else jload(
                     fresh["user_mood"], {})
@@ -662,7 +670,7 @@ class Mind:
                 try:
                     fresh = await get_persona(self.store, pid)
                     await self.subconscious.ingest(fresh, turn_id, user_text, reply,
-                                                   chord=(c_obs or {}).get("user_chord") or {}, salience=salience)
+                                                   chord=(psy or {}).get("user_chord") or {}, salience=salience)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("juice ingest failed: %s", exc)
             self.bus.publish(pid, {"type": "memory_updated", "turn_id": turn_id})
@@ -703,22 +711,23 @@ class Mind:
                                 text="Thinking back after you last talked, this came to mind:\n" + rec.text,
                                 ref=",".join(map(str, rec.event_ids)), created_at=now())
 
-    async def _revisit(self, pid, event_id, turn_id, user_text, b_rev, sources) -> None:
+    async def _revisit(self, pid, event_id, turn_id, user_text, level, rationale, sources) -> None:
         """Revisit-and-revise: the companion changes its mind out loud.
-        If a past verdict on an overlapping topic reached a different level, note it."""
+        If a past verdict on an overlapping topic reached a different level, note it.
+        ``level`` is the verifier's (C) - it owns the record of truth."""
         from .embedder import cosine, hash_embed
         rows = await self.store.all(
             "SELECT v.level, v.rationale, v.created_at, t.user_text FROM verdicts v JOIN turns t ON t.id = v.turn_id "
             "WHERE v.persona_id = ? AND v.turn_id != ? ORDER BY v.id DESC LIMIT 60", pid, turn_id)
         q = hash_embed(user_text)
         for r in rows:
-            if r["level"] == b_rev["level"]:
+            if r["level"] == level:
                 continue
             if cosine(q, hash_embed(r["user_text"])) < 0.55:
                 continue
             when = local_dt(r["created_at"], "UTC").strftime("%d %b")
             text = (f"On reflection: when this came up on {when} my answer was judged {r['level']} "
-                    f"({r['rationale'][:120]}); now it is {b_rev['level']} ({b_rev['rationale'][:120]}).")
+                    f"({r['rationale'][:120]}); now it is {level} ({rationale[:120]}).")
             await self.memory.add_layers(pid, event_id, [{"layer": "afterthought", "author": "B", "kind": "afterthought",
                                                           "text": text, "quote": user_text[:200], "salience": 2}],
                                          sources=sources)
@@ -753,7 +762,8 @@ class Mind:
 
 
 class _LiveLobes:
-    """B and C working while A speaks. Everything they find goes to A's inner-voice queue."""
+    """B working while A speaks - searching its own record and reading the person.
+    Everything it finds goes to A's inner-voice queue."""
 
     def __init__(self, mind: "Mind", persona, turn_id, user_text, tail, recall_res, recall_text, rules, inner):
         self.m, self.persona, self.turn_id = mind, persona, turn_id
@@ -804,16 +814,16 @@ class _LiveLobes:
 
     async def _gut(self) -> None:
         try:
-            read = await live.gut_read(self.m.c, user_text=self.user_text, tail=self.tail,
+            read = await live.gut_read(self.m.b, user_text=self.user_text, tail=self.tail,
                                        expect=self.persona.get("c_expect", ""),
                                        user_mood=emotion.render(jload(self.persona.get("user_mood"), {})))
         except Exception as exc:  # noqa: BLE001
             log.warning("gut read failed: %s", exc)
             return
         if read["tone"]:
-            self._put({"from": "C", "kind": "tone", "text": f"How they seem right now: {read['tone']}"})
+            self._put({"from": "B", "kind": "tone", "text": f"How they seem right now: {read['tone']}"})
         if read["surprise"]:
-            self._put({"from": "C", "kind": "surprise", "text": f"Not what you expected from them: {read['surprise']}"})
+            self._put({"from": "B", "kind": "surprise", "text": f"Not what you expected from them: {read['surprise']}"})
 
     def on_text(self, text: str) -> None:
         """Called as A speaks: hand each new finished stretch to B for a live check."""

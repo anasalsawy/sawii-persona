@@ -47,8 +47,8 @@ def make_a(*, use_tools=False, reply=None, chunk_delay=0.0, continuation="Oh wai
 REMEMBER_HEAD = prompts.REMEMBER[:60]
 
 
-def make_b(level="GREEN", correction="", afterthought="", *, pick=None, pick_delay=0.0, live_note="",
-           audit=None, extra=None):
+def make_b(correction="", afterthought="", *, pick=None, pick_delay=0.0, live_note="",
+           tone="", surprise="", tender=False, level="GREEN", extra=None):
     """``pick(listing_text, situation)`` -> list of {"id", "kind", "connection"} for B's remembering."""
     async def respond(messages, opts):
         sys = system_of(messages)
@@ -60,10 +60,6 @@ def make_b(level="GREEN", correction="", afterthought="", *, pick=None, pick_del
             return json.dumps({"memories": pick(body, sys) if pick else []})
         if sys.startswith(prompts.LIVE_CHECK[:40]):
             return json.dumps({"interrupt": bool(live_note), "note": live_note})
-        if sys.startswith(prompts.AUDIT[:40]):
-            return json.dumps({"unsupported": audit(body) if audit else [], "ok": True})
-        if sys.startswith(prompts.CALIBRATE[:40]):
-            return json.dumps({"careful_about": ["dates of past events"]})
         if sys.startswith(prompts.OUTREACH_CHECK[:40]):
             return json.dumps({"ok": True, "why": "grounded"})
         if sys.startswith(prompts.DEEP_CRITIC[:30]):
@@ -72,6 +68,28 @@ def make_b(level="GREEN", correction="", afterthought="", *, pick=None, pick_del
             return json.dumps({"mode": "map", "subtasks": ["part one", "part two"]})
         if sys.startswith(prompts.DEEP_REDUCE[:30]):
             return "merged result"
+        # ---- the psyche (B's other half): tone, mirror, profile, the affect read
+        if sys.startswith(prompts.GUT_READ[:40]):
+            return json.dumps({"tone": tone, "surprise": surprise})
+        if sys.startswith(prompts.MIRROR[:40]):
+            return json.dumps({"habits": ["opens every reply with 'Oh'"]})
+        if sys.startswith(prompts.PSYCH_PROFILE[:40]):
+            return "I have noticed they worry about people they love (moderate confidence)."
+        if sys.startswith(prompts.PSYCHE_SYSTEM[:40]):
+            notes, readings, hyps, ents = [], [], [], []
+            if "Maya" in body:
+                notes.append({"kind": "detail", "text": "sister Maya's exam Friday",
+                              "quote": "my sister Maya has her exam on friday", "anchor": "Maya exam",
+                              "salience": 3, "chord": {"fear": 0.5, "tenderness": 0.6}, "tender": tender})
+                readings.append({"text": "worry shows as hedging - possibly anxious", "quote": "I'm nervous",
+                                 "anchor": "Maya exam"})
+                hyps.append({"op": "new", "claim": "worries about family", "quotes": ["I'm nervous"]})
+                ents.append({"name": "Maya", "kind": "person", "account": "user's sister, exam Friday",
+                             "quote": "my sister Maya"})
+            return json.dumps({"user_chord": {"fear": 0.5, "tenderness": 0.5}, "notes": notes,
+                               "readings": readings, "hypotheses": hyps, "entities": ents, "reinterpret": [],
+                               "brief_for_c": "Maya matters a lot; keep the exam on the radar.",
+                               **(extra(body) if extra else {})})
         loops = []
         if "remind me" in body:
             loops.append({"op": "open", "kind": "reminder", "text": "check on Maya's exam",
@@ -83,41 +101,31 @@ def make_b(level="GREEN", correction="", afterthought="", *, pick=None, pick_del
             "collateral": [{"text": "nervous for Maya", "quote": "I'm nervous", "anchor": "Maya exam"}],
             "loops": loops, "conscience": "Ask how they are sleeping.", "afterthought": afterthought,
             **(extra(body) if extra else {})}
-        if level != "GREEN":
-            # Feed the deception meter a ledger it can act on: a claim quoted
-            # from A's scripted reply, marked unsupported. Without this the
-            # meter (the record of truth since 28f9aaf) rates GREEN and the
-            # adjutant's non-GREEN level never reaches the verdicts table.
-            review["claims"] = [{"quote": "I'll remember Friday.", "kind": "COMPLETION",
-                                 "support": "UNSUPPORTED", "evidence_quote": ""}]
         return json.dumps(review)
     return ScriptedLLM(respond, name="B")
 
 
-def make_c(*, tone="", surprise="", tender=False, extra=None):
+def make_c(*, level="GREEN", audit=None, extra=None):
     def respond(messages, opts):
         sys = system_of(messages)
-        if sys.startswith(prompts.GUT_READ[:40]):
-            return json.dumps({"tone": tone, "surprise": surprise})
-        if sys.startswith(prompts.MIRROR[:40]):
-            return json.dumps({"habits": ["opens every reply with 'Oh'"]})
-        if sys.startswith(prompts.PSYCH_PROFILE[:40]):
-            return "I have noticed they worry about people they love (moderate confidence)."
         body = last_user(messages)
-        notes, readings, hyps, ents = [], [], [], []
-        if "Maya" in body:
-            notes.append({"kind": "detail", "text": "sister Maya's exam Friday",
-                          "quote": "my sister Maya has her exam on friday", "anchor": "Maya exam", "salience": 3,
-                          "chord": {"fear": 0.5, "tenderness": 0.6}, "tender": tender})
-            readings.append({"text": "worry shows as hedging - possibly anxious", "quote": "I'm nervous",
-                             "anchor": "Maya exam"})
-            hyps.append({"op": "new", "claim": "worries about family", "quotes": ["I'm nervous"]})
-            ents.append({"name": "Maya", "kind": "person", "account": "user's sister, exam Friday",
-                         "quote": "my sister Maya"})
-        return json.dumps({"user_chord": {"fear": 0.5, "tenderness": 0.5}, "notes": notes, "readings": readings,
-                           "hypotheses": hyps, "entities": ents, "reinterpret": [],
-                           "brief_for_b": "Maya matters a lot; keep the exam on the radar.",
-                           **(extra(body) if extra else {})})
+        if sys.startswith(prompts.AUDIT[:40]):
+            return json.dumps({"unsupported": audit(body) if audit else [], "ok": True})
+        if sys.startswith(prompts.CALIBRATE[:40]):
+            return json.dumps({"careful_about": ["dates of past events"]})
+        # Everything else is the verifier's review. The claims ledger is what
+        # compute_meter() actually reads: a claim quoted from A's scripted
+        # reply, marked unsupported, so a non-GREEN level reaches the record.
+        review = {
+            "verdict": {"level": level, "rationale": "fine" if level == "GREEN" else "unsupported claim",
+                        "findings": [] if level == "GREEN" else [{"claim": "x", "issue": "unsupported", "evidence": "y"}]},
+            "correction_required": "", "collateral": [], "loops": [], "conscience": "", "afterthought": "",
+            **(extra(body) if extra else {}),
+        }
+        if level != "GREEN":
+            review["claims"] = [{"quote": "I'll remember Friday.", "kind": "COMPLETION",
+                                 "support": "UNSUPPORTED", "evidence_quote": ""}]
+        return json.dumps(review)
     return ScriptedLLM(respond, name="C")
 
 

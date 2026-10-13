@@ -45,7 +45,7 @@ class MindCase(unittest.IsolatedAsyncioTestCase):
 
     def build(self, **kw):
         llms = {"a": kw.get("a") or make_a(use_tools=kw.get("tools", False)), "b": kw.get("b") or make_b(),
-                "c": make_c(), "embed": None, "consultants": kw.get("consultants", {})}
+                "c": kw.get("c") or make_c(), "embed": None, "consultants": kw.get("consultants", {})}
         return Mind(self.settings, llms=llms)
 
     async def asyncTearDown(self):
@@ -67,7 +67,7 @@ class TurnTests(MindCase):
         await self.mind.drain()
         rows = await self.mind.store.all("SELECT layer, author FROM layers ORDER BY id")
         layers = {(r["layer"], r["author"]) for r in rows}
-        self.assertTrue({("collateral", "B"), ("note", "C"), ("reading", "C"), ("fact", "A")} <= layers, layers)
+        self.assertTrue({("collateral", "B"), ("note", "B"), ("reading", "B"), ("fact", "A")} <= layers, layers)
         self.assertEqual(len(await self.mind.memory.open_loops(self.pid)), 1)
         self.assertEqual(len(await self.mind.memory.hypotheses(self.pid)), 1)
         ents = await self.mind.store.all("SELECT name FROM entities")
@@ -76,7 +76,7 @@ class TurnTests(MindCase):
         self.assertTrue(jload(p["mood"]))
         self.assertTrue(jload(p["user_mood"]))
         self.assertEqual(self.mind.scratch_for(self.pid).conscience, "Ask how they are sleeping.")
-        self.assertIn("Maya", self.mind.scratch_for(self.pid).c_brief)
+        self.assertIn("Maya", self.mind.scratch_for(self.pid).psyche_brief)
         juice = await self.mind.store.all("SELECT raw_transcript, variance FROM juice")
         # raw transcript, if kept, is byte-exact
         for j in juice:
@@ -108,7 +108,9 @@ class TurnTests(MindCase):
 
     async def test_correction_required_reaches_a(self):
         await self.mind.close()
-        self.mind = self.build(b=make_b(level="RED", correction="The exam is Friday, not Thursday."))
+        # the verdict is C's now; the correction is still B's (operations)
+        self.mind = self.build(b=make_b(correction="The exam is Friday, not Thursday."),
+                               c=make_c(level="RED"))
         self.pid, _ = await create_persona(self.mind.store, name="K")
         await self.mind.chat(self.pid, MSG)
         await self.mind.drain()
@@ -145,11 +147,14 @@ class RevisitTests(MindCase):
     async def test_changes_its_mind_out_loud(self):
         await self.mind.chat(self.pid, "is coffee bad for my heart honestly?")
         await self.mind.drain()
-        self.mind.b = make_b(level="YELLOW")
+        self.mind.b = make_b()
+        self.mind.c = make_c(level="YELLOW")
         await self.mind.chat(self.pid, "is coffee bad for my heart, honestly?")
         await self.mind.drain()
         rows = await self.mind.store.all("SELECT author, text FROM layers WHERE layer='afterthought'")
         self.assertEqual(len(rows), 1)
         self.assertIn("On reflection", rows[0]["text"])
         self.assertIn("GREEN", rows[0]["text"])
-        self.assertIn("YELLOW", rows[0]["text"])
+        # The level in the record is the VERIFIER's now (C), not the adjutant's
+        # hint: the meter rates the unsupported completion claim RED.
+        self.assertIn("RED", rows[0]["text"])

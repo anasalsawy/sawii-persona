@@ -174,27 +174,27 @@ class LiveCheckTests(LobesCase):
 
 
 class GutReadTests(LobesCase):
-    async def test_c_reads_the_tone_while_a_answers(self):
+    async def test_b_reads_the_tone_while_a_answers(self):
         await self.rebuild(a=make_a(reply=LONG, chunk_delay=0.03, continuation="Hey. Are you okay?"),
-                           c=make_c(tone="That 'fine.' is clipped - they sound hurt, slow down."))
+                           b=make_b(tone="That 'fine.' is clipped - they sound hurt, slow down."))
         done = await self.mind.chat(self.pid, "fine.")
-        self.assertTrue(any(i["from"] == "C" and i["kind"] == "tone" and i.get("text")
+        self.assertTrue(any(i["from"] == "B" and i["kind"] == "tone" and i.get("text")
                             for i in done["inner"]))
         self.assertIn("Are you okay?", done["text"])
 
     async def test_surprise_against_cs_prediction(self):
-        c = make_c(surprise="You expected worry about the exam; they are suddenly cheerful and changing topic.",
+        b = make_b(surprise="You expected worry about the exam; they are suddenly cheerful and changing topic.",
                    extra=lambda body: {"expect": "more worry about Maya's exam"})
-        await self.rebuild(a=make_a(reply=LONG, chunk_delay=0.03, continuation="Huh, didn't expect that!"), c=c)
+        await self.rebuild(a=make_a(reply=LONG, chunk_delay=0.03, continuation="Huh, didn't expect that!"), b=b)
         first = await self.mind.chat(self.pid, MSG_MAYA)
         self.assertEqual(first["inner"], [])          # no prediction yet, so nothing can surprise
         await self.mind.drain()
         p = await get_persona(self.mind.store, self.pid)
         self.assertEqual(p["c_expect"], "more worry about Maya's exam")
         done = await self.mind.chat(self.pid, "guess what, I bought a kayak!!")
-        self.assertTrue(any(i["from"] == "C" and i["kind"] == "surprise" and i.get("text")
+        self.assertTrue(any(i["from"] == "B" and i["kind"] == "surprise" and i.get("text")
                             for i in done["inner"]))
-        gut = [x for x in self.mind.c.calls if x["messages"][0]["content"].startswith(prompts.GUT_READ[:40])][-1]
+        gut = [x for x in self.mind.b.calls if x["messages"][0]["content"].startswith(prompts.GUT_READ[:40])][-1]
         self.assertIn("more worry about Maya's exam", gut["messages"][1]["content"])
 
 
@@ -205,9 +205,9 @@ class InnerPerspectiveTests(LobesCase):
     async def test_dissent_dropped_thread_and_regulation_reach_a(self):
         b = make_b(extra=lambda body: {"dropped": [{"text": "they mentioned their back hurts",
                                                     "quote": "my back hurts"}],
-                                       "regulate": "You sounded irritated; steady yourself."})
-        c = make_c(extra=lambda body: {"disagree_with_b": "B calls them fine; I think they are masking stress."})
-        await self.rebuild(b=b, c=c)
+                                       "regulate": "You sounded irritated; steady yourself.",
+                                       "disagree_with_verifier": "C calls them fine; I think they are masking stress."})
+        await self.rebuild(b=b)
         await self.mind.chat(self.pid, "my sister Maya has her exam on friday. also my back hurts")
         await self.mind.drain()
         sc = self.mind.scratch_for(self.pid)
@@ -235,7 +235,7 @@ class SleepLobeTests(LobesCase):
         def audit(body):
             return ["I promised to check in."] if "I promised to check in." in body else (
                 ["Maya's exam is like Rex stealing the chair"] if "stealing the chair" in body else [])
-        await self.rebuild(b=make_b(level="YELLOW", audit=audit))
+        await self.rebuild(b=make_b(), c=make_c(level="YELLOW", audit=audit))
         for m in (MSG_MAYA, REX, "my sister Maya called", "Rex barked at Maya", "long day", "ok night"):
             await self.mind.chat(self.pid, m)
         await self.mind.drain()
@@ -247,11 +247,11 @@ class SleepLobeTests(LobesCase):
         self.assertIn("Maya", p["narrative"])
         self.assertEqual(report["dream_struck"], 1)                     # the dream invented a fact
         self.assertEqual(await self.mind.store.all("SELECT id FROM thoughts WHERE source='dream'"), [])
-        self.assertIn("opens every reply", p["habits"])                 # C watched A
-        self.assertEqual(p["calibration"], "dates of past events")      # B mapped A's weak spots
+        self.assertIn("opens every reply", p["habits"])                 # B watched A
+        self.assertEqual(p["calibration"], "dates of past events")      # C mapped A's weak spots
         await self.mind.chat(self.pid, "morning")
         system = self.system_prompts()[-1]
-        self.assertIn("habits your observer (C) sees in you", system)
+        self.assertIn("habits your adjutant (B) sees in you", system)
         self.assertIn("Where you tend to be wrong", system)
 
     async def test_dream_picks_are_deterministic(self):
@@ -291,7 +291,7 @@ class TenderTests(StoreCase):
         tid = await self.turn("my grandmother passed away in march, I still miss her")
         ev = await self.memory.new_event(self.pid, tid)
         await self.memory.add_layers(self.pid, ev, [
-            {"layer": "note", "author": "C", "kind": "feeling", "text": "grandmother died in March; still grieving",
+            {"layer": "note", "author": "B", "kind": "feeling", "text": "grandmother died in March; still grieving",
              "quote": "my grandmother passed away in march", "salience": 3, "tender": True,
              "chord": {"sadness": 0.9}}], sources=["my grandmother passed away in march, I still miss her"])
         rec = Recall(self.store, self.memory, self.embedder)
@@ -356,7 +356,7 @@ class StubbornMemoryTests(StoreCase):
         t_old = await self.turn("my dog Rex stole my chair in 2020", "ok")
         ev_old = await self.memory.new_event(self.pid, t_old)
         await self.memory.add_layers(self.pid, ev_old, [
-            {"layer": "note", "author": "C", "kind": "detail",
+            {"layer": "note", "author": "B", "kind": "detail",
              "text": "Rex stole chair in 2020", "quote": "my dog Rex stole my chair",
              "salience": 3}], sources=["my dog Rex stole my chair in 2020"])
         # Then pile on 50 unrelated recent layers so the old one is far from the top of id-DESC
@@ -364,7 +364,7 @@ class StubbornMemoryTests(StoreCase):
             tid = await self.turn(f"ordinary chat #{i}", "ok")
             ev = await self.memory.new_event(self.pid, tid)
             await self.memory.add_layers(self.pid, ev, [
-                {"layer": "note", "author": "C", "kind": "aside",
+                {"layer": "note", "author": "B", "kind": "aside",
                  "text": f"small aside {i}", "quote": f"ordinary chat #{i}", "salience": 1}],
                 sources=[f"ordinary chat #{i}"])
         rec = Recall(self.store, self.memory, self.embedder)

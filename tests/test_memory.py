@@ -23,10 +23,10 @@ class LayerTests(StoreCase):
         ev = await self.memory.new_event(self.pid, tid)
         src = await self.memory.user_sources(self.pid)
         ids = await self.memory.add_layers(self.pid, ev, [
-            {"layer": "note", "author": "C", "kind": "detail", "text": "Maya's exam is Friday",
+            {"layer": "note", "author": "B", "kind": "detail", "text": "Maya's exam is Friday",
              "quote": "my sister Maya has her exam on friday", "salience": 3},
-            {"layer": "note", "author": "C", "text": "invented", "quote": "I hate my sister"},  # not said
-            {"layer": "note", "author": "B", "text": "wrong author", "quote": "I'm nervous for her"},
+            {"layer": "note", "author": "B", "text": "invented", "quote": "I hate my sister"},  # not said
+            {"layer": "note", "author": "A", "text": "wrong author", "quote": "I'm nervous for her"},
             {"layer": "collateral", "author": "B", "text": "worried for Maya", "quote": "I'm nervous for her"},
             {"layer": "fact", "author": "A", "text": "We talked about Maya's exam."},
         ], sources=src)
@@ -38,12 +38,12 @@ class LayerTests(StoreCase):
     async def test_supersession_on_revision(self):
         t1 = await self.turn("I love coffee, three cups a day")
         e1 = await self.memory.new_event(self.pid, t1)
-        await self.memory.add_layers(self.pid, e1, [{"layer": "note", "author": "C", "kind": "preference",
+        await self.memory.add_layers(self.pid, e1, [{"layer": "note", "author": "B", "kind": "preference",
                                                       "text": "loves coffee", "quote": "I love coffee"}],
                                      sources=await self.memory.user_sources(self.pid))
         t2 = await self.turn("actually I quit coffee, it's tea now")
         e2 = await self.memory.new_event(self.pid, t2)
-        await self.memory.add_layers(self.pid, e2, [{"layer": "note", "author": "C", "kind": "preference",
+        await self.memory.add_layers(self.pid, e2, [{"layer": "note", "author": "B", "kind": "preference",
                                                       "text": "quit coffee, drinks tea",
                                                       "quote": "actually I quit coffee, it's tea now"}],
                                      sources=await self.memory.user_sources(self.pid))
@@ -54,7 +54,7 @@ class LayerTests(StoreCase):
     async def test_reconsolidation_keeps_quote(self):
         t = await self.turn("haha my dog keeps stealing my chair")
         e = await self.memory.new_event(self.pid, t)
-        [lid] = await self.memory.add_layers(self.pid, e, [{"layer": "note", "author": "C", "kind": "joke",
+        [lid] = await self.memory.add_layers(self.pid, e, [{"layer": "note", "author": "B", "kind": "joke",
                                                             "text": "dog steals chair",
                                                             "quote": "my dog keeps stealing my chair"}],
                                              sources=await self.memory.user_sources(self.pid))
@@ -110,7 +110,7 @@ class RecallTests(StoreCase):
         t = await self.turn(user)
         e = await self.memory.new_event(self.pid, t, chord=chord)
         return await self.memory.add_layers(self.pid, e, [
-            {"layer": "note", "author": "C", "kind": kind, "text": text, "quote": quote, "salience": sal,
+            {"layer": "note", "author": "B", "kind": kind, "text": text, "quote": quote, "salience": sal,
              "chord": chord},
             {"layer": "fact", "author": "A", "text": f"We talked: {text}"}],
             sources=await self.memory.user_sources(self.pid))
@@ -123,7 +123,7 @@ class RecallTests(StoreCase):
         res = await rec.recall(self.persona, "how did Maya's exam go?")
         self.assertIn("Maya", res.text)
         self.assertIn("[fact·A]", res.text)
-        self.assertIn("[note·C·detail]", res.text)
+        self.assertIn("[note·B·detail]", res.text)
         self.assertNotIn("bicycle", res.text)
 
     async def test_mood_lane_surfaces_by_feeling(self):

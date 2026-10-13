@@ -106,13 +106,13 @@ class Sleep:
                     f"- ({self.mind.memory.effective_confidence(h, hl):.2f}, seen {h['confirmations']}x) {h['claim']} "
                     f"e.g. {', '.join(jload(h['quotes'], [])[:2])}" for h in hyps[:20]),
                 "Recent readings:\n" + "\n".join(f"- {r['text']} (\"{r['quote']}\")" for r in readings)]
-        res = await self.mind.c.chat([{"role": "system", "content": PSYCH_PROFILE},
+        res = await self.mind.b.chat([{"role": "system", "content": PSYCH_PROFILE},
                                       {"role": "user", "content": "\n\n".join(body)}],
                                      temperature=0.3, max_tokens=600)
         text = strip_reasoning(res.text)
         if len(text) < 20:
             return {"psych_profile": "kept previous"}
-        struck = await self._audit(text, "\n\n".join(body[1:]))  # B challenges C: evidence or it goes
+        struck = await self._audit(text, "\n\n".join(body[1:]))  # C verifies B: evidence or it goes
         text = _strike(text, struck)
         if len(text) < 20:
             return {"psych_profile": "kept previous (audit struck it all)", "profile_struck": len(struck)}
@@ -153,21 +153,21 @@ class Sleep:
         return {"dream": f"{n} associations", "dream_struck": len(assoc) - n}
 
     async def _mirror(self, persona: dict, since: float) -> dict:
-        """C looks at A instead of the person: the habits a single mind cannot see in itself."""
+        """B looks at A instead of the person: the habits a single mind cannot see in itself."""
         pid = persona["id"]
         rows = await self.mind.store.all("SELECT reply_text FROM turns WHERE persona_id = ? AND reply_text != '' "
                                          "ORDER BY id DESC LIMIT 30", pid)
         if len(rows) < 5:
             return {"mirror": "too few replies"}
         listing = "\n".join(f"- {r['reply_text'][:400]}" for r in reversed(rows))
-        res = await self.mind.c.chat([{"role": "system", "content": MIRROR}, {"role": "user", "content": listing}],
+        res = await self.mind.b.chat([{"role": "system", "content": MIRROR}, {"role": "user", "content": listing}],
                                      temperature=0.2, max_tokens=400, json_mode=True)
         habits = [str(h).strip()[:200] for h in ((extract_json(res.text) or {}).get("habits") or []) if str(h).strip()]
         await self.mind.store.update("personas", pid, habits="\n".join(f"- {h}" for h in habits[:4]))
         return {"mirror": f"{len(habits[:4])} habits"}
 
     async def _calibrate(self, persona: dict, since: float) -> dict:
-        """B maps where A tends to be wrong, from its own verdicts."""
+        """C maps where A tends to be wrong, from the verdicts it wrote."""
         pid = persona["id"]
         rows = await self.mind.store.all("SELECT level, rationale, findings FROM verdicts WHERE persona_id = ? AND "
                                          "level != 'GREEN' ORDER BY id DESC LIMIT 60", pid)
@@ -178,7 +178,7 @@ class Sleep:
             fs = jload(r["findings"], [])
             detail = "; ".join(f"{f.get('issue', '')}: {f.get('claim', '')}"[:160] for f in fs if isinstance(f, dict))
             lines.append(f"- {r['level']}: {r['rationale'][:200]}" + (f" ({detail})" if detail else ""))
-        res = await self.mind.b.chat([{"role": "system", "content": CALIBRATE},
+        res = await self.mind.c.chat([{"role": "system", "content": CALIBRATE},
                                       {"role": "user", "content": "\n".join(lines)}],
                                      temperature=0.1, max_tokens=400, json_mode=True)
         areas = [str(a).strip()[:200] for a in ((extract_json(res.text) or {}).get("careful_about") or [])
@@ -187,11 +187,11 @@ class Sleep:
         return {"calibration": f"{len(areas[:4])} areas"}
 
     async def _audit(self, text: str, source: str) -> list[str]:
-        """B checks something the mind wrote about itself or the person; returns sentences to strike."""
+        """C verifies something the mind wrote about itself or the person; returns sentences to strike."""
         if not text.strip():
             return []
         try:
-            res = await self.mind.b.chat([{"role": "system", "content": AUDIT},
+            res = await self.mind.c.chat([{"role": "system", "content": AUDIT},
                                           {"role": "user", "content": f"TEXT:\n{text}\n\nSOURCE:\n{source[:8000]}"}],
                                          temperature=0.0, max_tokens=500, json_mode=True)
         except Exception as exc:  # noqa: BLE001 - an audit outage must not erase the night's work
