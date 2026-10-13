@@ -32,7 +32,9 @@ function url(path: string): string {
 	return `${API_BASE}${path}`;
 }
 
-export { readKey, writeKey, hydrateKey } from "./store";
+import { readKey, writeKey, hydrateKey } from "./store";
+
+export { readKey, writeKey, hydrateKey };
 
 async function parseError(res: Response): Promise<string> {
 	try {

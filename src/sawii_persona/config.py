@@ -139,6 +139,15 @@ class Settings:
     fireworks_base_model: str = field(default_factory=lambda: _env("FIREWORKS_BASE_MODEL", "accounts/fireworks/models/qwen3-8b"))
     finetune_command: str = field(default_factory=lambda: _env("FINETUNE_COMMAND", ""))
 
+    # --- aging: the per-turn weight update ---------------------------------
+    # Where A's weights actually live. When A runs on a hosted/frozen endpoint
+    # this stays empty and the update module is an honest no-op. Point it at a
+    # self-hosted server (vLLM + LoRA, or the transformers/PEFT wrapper) that
+    # accepts POST {persona_id, turn_id, level, reward, prompt, response}.
+    update_url: str = field(default_factory=lambda: _env("UPDATE_URL", ""))
+    update_timeout: float = field(default_factory=lambda: _float("UPDATE_TIMEOUT", 20.0))
+    update_max_chars: int = field(default_factory=lambda: _int("UPDATE_MAX_CHARS", 6000))
+
     # --- voice -------------------------------------------------------------
     asr: ModelEndpoint = field(default_factory=lambda: ModelEndpoint(
         _env("ASR_BASE_URL", ""), _env("ASR_API_KEY", ""), _env("ASR_MODEL", "whisper-1")))

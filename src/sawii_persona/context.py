@@ -39,6 +39,7 @@ class Scratch:
     lane_questions: str = ""  # pending questions from Maya's background working lane
     dropped: list = field(default_factory=list)  # things they said that A did not answer
     last_consults: list = field(default_factory=list)
+    aging: dict = field(default_factory=dict)  # last weight update C's verdict asked for
 
 
 def integrity_block(integ: dict, calibration: str = "") -> str:

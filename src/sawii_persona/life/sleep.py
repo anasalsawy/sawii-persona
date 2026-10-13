@@ -68,11 +68,21 @@ class Sleep:
         except Exception as exc:  # noqa: BLE001
             log.warning("cup failed: %s", exc)
             report["cup"] = f"failed: {exc}"[:200]
-        try:
-            report["subconscious"] = await self.ft.consolidate(persona)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("consolidate failed: %s", exc)
-            report["subconscious"] = f"failed: {exc}"[:200]
+        # The gate on learning. C just rehearsed the wrongness dataset; if the mind is
+        # drifting (anchor below the floor) the night's juice is NOT baked. A score of None
+        # means there was nothing to rehearse yet - not evidence of drift, just no cases.
+        anchor_score = report.get("score")
+        floor = self.mind.s.juice_floor
+        if anchor_score is not None and anchor_score < floor:
+            log.info("anchor %.3f below floor %.2f - refusing tonight's learning",
+                     anchor_score, floor)
+            report["subconscious"] = f"refused: anchor {anchor_score} < floor {floor}"
+        else:
+            try:
+                report["subconscious"] = await self.ft.consolidate(persona)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("consolidate failed: %s", exc)
+                report["subconscious"] = f"failed: {exc}"[:200]
         await self.mind.store.update("personas", pid, last_sleep_at=now())
         return report
 

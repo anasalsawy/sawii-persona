@@ -186,6 +186,19 @@ CREATE TABLE IF NOT EXISTS anchor_runs (
     created_at  REAL NOT NULL
 );
 
+-- Aging: one row per weight update C's verdict asked for. This is the record of
+-- the mind actually changing, turn by turn - as opposed to the nightly bake.
+CREATE TABLE IF NOT EXISTS updates (
+    id          INTEGER PRIMARY KEY,
+    persona_id  INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+    turn_id     INTEGER,
+    level       TEXT NOT NULL DEFAULT '',
+    reward      REAL NOT NULL DEFAULT 0.0,
+    status      TEXT NOT NULL DEFAULT 'applied',   -- applied|failed
+    detail      TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS thoughts (
     id          INTEGER PRIMARY KEY,
     persona_id  INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,

@@ -44,6 +44,7 @@ from .context import Scratch, build_messages
 from .embedder import Embedder
 from .identity import get_persona
 from .life.subconscious import Subconscious
+from .life.update import Updater
 from .llm import LLM, OpenAICompatLLM, ToolCall, extract_json
 from .memory.recall import Recall
 from .timesense import local_dt
@@ -114,6 +115,9 @@ class Mind:
                              unaddressed_days=settings.unaddressed_days, half_life_days=settings.psyche_half_life_days)
         self.subconscious = Subconscious(self.store, self.embedder, floor=settings.juice_floor,
                                          buffer_rows=settings.buffer_rows, bowl_ratio=settings.bowl_ratio)
+        # Aging: C's verdict becomes a weight update every turn, whenever A runs on
+        # weights we can touch (SAWII_UPDATE_URL). Otherwise an honest no-op.
+        self.updater = Updater(settings, self.store, health=self.health_registry)
         self.bus = Bus()
         self.scratch: dict[int, Scratch] = {}
         self._turn_locks: dict[int, asyncio.Lock] = {}
@@ -554,6 +558,18 @@ class Mind:
                                "findings": b_rev["findings"]}
                 await self._revisit(pid, event_id, turn_id, user_text, b_rev['level'],
                                      b_rev['rationale'], sources)
+            # ---- aging: C's verdict becomes a weight update, this turn.
+            # Not a nightly job and not a fine-tune: one small step, taken while the
+            # exchange is still something the mind just lived through.
+            if verdict_out and verdict_out.get("level"):
+                try:
+                    aging = await self.updater.update(
+                        persona, turn_id=turn_id, level=verdict_out["level"],
+                        prompt=user_text, response=reply)
+                    scratch.aging = aging
+                    self.bus.publish(pid, {"type": "aging", **aging})
+                except Exception as exc:  # noqa: BLE001 - the mind must keep talking
+                    log.warning("aging failed: %s", exc)
             if b_rev:
                 scratch.conscience = b_rev["conscience"]
                 if b_rev["regulate"]:  # A's own feeling is running hot: B steadies it before the next reply
