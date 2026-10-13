@@ -59,7 +59,38 @@ Nothing else is coupled. `ai-elements/*` and `components/ui/*` are local source.
 2. **Where this lives.** `companion-app` is 404 for this GitHub identity, so the fork is built
    here and is portable into `companion-app` once access is granted.
 
-## Plan
+## Plan — where this is
+
+- **F0 — fork** ✅ base vendored, LICENSE + NOTICE retained, structure preserved.
+- **F1 — stub** ✅ the three `@cline/*` packages are gone; the app is trimmed to the
+  components it uses and builds clean (`ui/build.sh`). Cline's marks removed.
+- **F2 — transport** ✅ `src/lib/api.ts` speaks sawii: REST + `POST /v1/chat/completions`
+  (SSE) + `GET /v1/events` (SSE). No Cline hub, no VS Code, no second backend.
+- **F3 — channels** ✅ the stage is split in the open:
+  **conversation** (left) · **inter-lobe channel** (right, top) · **workbench** (right, bottom).
+  Every row is a real event the server published — nothing is invented by the UI.
+- **F4 — serve** ✅ built to `ui/dist`, copied to `src/sawii_persona/web/companion/`, served
+  at `/app/` by the backend (`companion_route()`; falls back to the old page if unbuilt).
+
+### The backend change this required
+
+The in-turn inner voice used to be hidden: `inner` carried only `{from, kind}`. It now carries
+the lobes' **actual words**, and each whisper is published on the live channel the moment it
+happens — so the inter-lobe channel is real-time, not a post-hoc log. Gated by
+`SAWII_SHOW_INNER` (default `true`). The working-lane dialogue (`b_nudge`, `lane_question`,
+`voice_answer`, `b_delta`, `b_tool_*`) needed no change — it was already on the wire.
+
+### Still open
+
+- **Feeling channel** (mood/clock/loops pane) — clock + live dot are in the header today; the
+  emotion strip and open loops have endpoints (`/v1/persona/emotion`, `/v1/persona/loops`) but
+  no pane yet.
+- **History bootstrap** — the conversation starts empty on load; the server keeps the tail
+  (there is no "read my turns" endpoint yet).
+- **Voice** — `/v1/voice` WS is not wired into this client yet.
+- **Port to `companion-app`** — blocked on repo access; this fork is self-contained and moves as
+  a directory.
+
 
 - **F0 — fork** (done): base vendored, LICENSE + NOTICE retained, structure preserved.
 - **F1 — stub**: replace the 3 `@cline/*` packages + de-Cline the protocol; the app compiles.

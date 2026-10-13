@@ -95,6 +95,11 @@ class Settings:
     # --- behaviour ---------------------------------------------------------
     a_tools: bool = field(default_factory=lambda: _bool("A_TOOLS", True))
     show_verdict_to_user: bool = field(default_factory=lambda: _bool("SHOW_VERDICT", False))
+    # Publish the lobes' actual words - not just `from`/`kind` - on the live
+    # channel, so the companion UI can show the inter-lobe dialogue in the open.
+    # This deliberately reverses the old "they cannot see this" rule: the owner
+    # wants the minds visible. Set SAWII_SHOW_INNER=false to go back to kinds-only.
+    show_inner_to_user: bool = field(default_factory=lambda: _bool("SHOW_INNER", True))
     tail_turns: int = field(default_factory=lambda: _int("TAIL_TURNS", 8))
     recall_budget_chars: int = field(default_factory=lambda: _int("RECALL_BUDGET_CHARS", 3500))
     recall_band: float = field(default_factory=lambda: _float("RECALL_BAND", 0.30))  # loose = associative

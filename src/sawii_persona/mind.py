@@ -412,7 +412,8 @@ class Mind:
                             yield {"type": "tool", "name": str(ev)}
                     while heard < len(result.heard):
                         yield {"type": "inner", "from": result.heard[heard]["from"],
-                               "kind": result.heard[heard]["kind"]}
+                               "kind": result.heard[heard]["kind"],
+                               "text": str(result.heard[heard].get("text", ""))[:4000]}
                         heard += 1
                     yield {"type": "delta", "text": piece}
             except Exception as exc:  # noqa: BLE001
@@ -439,7 +440,8 @@ class Mind:
                                               result.chord, surface, failed, live_lobes), name=f"post-{turn_id}")
             done = {"type": "done", "turn_id": turn_id, "text": reply, "chord": result.chord,
                     "tools": result.tools_used, "spent_seconds": round(clock.spent, 2),
-                    "inner": [{"from": h["from"], "kind": h["kind"]} for h in result.heard]}
+                    "inner": [{"from": h["from"], "kind": h["kind"],
+                               "text": str(h.get("text", ""))[:4000]} for h in result.heard]}
             if self.s.show_verdict_to_user and not failed:
                 # Do NOT hold the turn lock waiting for B's review + C's 32B
                 # observation: the user sees `done` (and can send the next
@@ -769,6 +771,15 @@ class _LiveLobes:
     def _put(self, item: dict) -> None:
         if not self.closed:
             self.inner.put_nowait(item)
+            # Mirror what the lobes say to A onto the live channel, so the
+            # companion UI can show the inter-lobe dialogue as it happens
+            # (config: SAWII_SHOW_INNER, default on).
+            if self.m.s.show_inner_to_user:
+                self.m.bus.publish(self.persona["id"], {
+                    "type": "inner", "from": item.get("from", "B"),
+                    "kind": item.get("kind", ""), "text": str(item.get("text", ""))[:4000],
+                    "turn_id": self.turn_id, "at": time.time(),
+                })
 
     def start(self) -> None:
         self.memory_task = asyncio.create_task(self._remember(), name=f"remember-{self.turn_id}")

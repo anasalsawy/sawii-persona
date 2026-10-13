@@ -26,7 +26,8 @@ from collections import defaultdict, deque
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
-from starlette.routing import Route, WebSocketRoute
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .. import emotion, identity
@@ -44,6 +45,8 @@ from ..voice.realtime import SpeechIO, VoiceSession, parse_frame
 
 log = logging.getLogger(__name__)
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
+# The companion client (ui/ in the repo) is built to ui/dist and copied here.
+COMPANION_DIR = os.path.join(WEB_DIR, "companion")
 MAX_BODY = 256_000
 
 
@@ -561,11 +564,17 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         await rt.initiative.stop()
         await mind.drain(timeout=10)
 
+    def companion_route():
+        """The companion client if it has been built, else the old single page."""
+        if os.path.isdir(COMPANION_DIR) and os.path.exists(os.path.join(COMPANION_DIR, "index.html")):
+            return Mount("/app", app=StaticFiles(directory=COMPANION_DIR, html=True), name="companion")
+        return Route("/app", web_app)
+
     routes = [
-        Route("/", lambda r: RedirectResponse("/app")),
+        Route("/", lambda r: RedirectResponse("/app/")),
         Route("/health", health),
         Route("/health/subsystems", health_subsystems),
-        Route("/app", web_app),
+        companion_route(),
         Route("/admin/personas", admin_personas, methods=["GET", "POST"]),
         Route("/v1/models", models),
         Route("/v1/chat/completions", chat_completions, methods=["POST"]),

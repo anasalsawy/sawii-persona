@@ -141,4 +141,8 @@ class ApiTests(unittest.TestCase):
 
     def test_health_and_app(self):
         self.assertTrue(self.client.get("/health").json()["ok"])
-        self.assertIn("Sawii Persona", self.client.get("/app").text)
+        # /app serves the companion client (ui/) once built; the original
+        # single-page app otherwise. Either way it must be a real page.
+        app_page = self.client.get("/app/")
+        self.assertEqual(app_page.status_code, 200)
+        self.assertIn("Sawii", app_page.text)

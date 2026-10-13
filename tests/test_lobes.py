@@ -59,7 +59,11 @@ class RememberWhileTalkingTests(LobesCase):
         events = [e async for e in self.mind.respond(self.pid, "work was exhausting today")]
         done = events[-1]
         self.assertEqual([i["kind"] for i in done["inner"]], ["memory"])
-        self.assertIn({"type": "inner", "from": "B", "kind": "memory"}, events)
+        # The inner event now carries the lobes' actual words (SAWII_SHOW_INNER),
+        # so assert on the routing fields and that the text is present.
+        inner_events = [e for e in events if e.get("type") == "inner"]
+        self.assertTrue(any(e["from"] == "B" and e["kind"] == "memory" and e.get("text")
+                            for e in inner_events))
         self.assertTrue(done["text"].startswith("I hear you."))
         self.assertIn("reminds me of Rex", done["text"])          # same reply, continued
         self.assertNotIn("Tell me more", done["text"])             # stopped at a sentence boundary
@@ -138,7 +142,8 @@ class LiveCheckTests(LobesCase):
                                     continuation="Actually, no - sorry, it's Maya, and the exam is Friday."),
                            b=make_b(live_note="Her name is Maya and the exam is this Friday, not last month."))
         done = await self.mind.chat(self.pid, "how's my sister doing, do you think?")
-        self.assertIn({"from": "B", "kind": "correction"}, done["inner"])
+        self.assertTrue(any(i["from"] == "B" and i["kind"] == "correction" and i.get("text")
+                            for i in done["inner"]))
         self.assertIn("Actually, no", done["text"])
         heard = [m["content"] for c in self.mind.a.calls for m in c["messages"]
                    if m["role"] == "user" and "[inner voice" in str(m.get("content"))]
@@ -173,7 +178,8 @@ class GutReadTests(LobesCase):
         await self.rebuild(a=make_a(reply=LONG, chunk_delay=0.03, continuation="Hey. Are you okay?"),
                            c=make_c(tone="That 'fine.' is clipped - they sound hurt, slow down."))
         done = await self.mind.chat(self.pid, "fine.")
-        self.assertIn({"from": "C", "kind": "tone"}, done["inner"])
+        self.assertTrue(any(i["from"] == "C" and i["kind"] == "tone" and i.get("text")
+                            for i in done["inner"]))
         self.assertIn("Are you okay?", done["text"])
 
     async def test_surprise_against_cs_prediction(self):
@@ -186,7 +192,8 @@ class GutReadTests(LobesCase):
         p = await get_persona(self.mind.store, self.pid)
         self.assertEqual(p["c_expect"], "more worry about Maya's exam")
         done = await self.mind.chat(self.pid, "guess what, I bought a kayak!!")
-        self.assertIn({"from": "C", "kind": "surprise"}, done["inner"])
+        self.assertTrue(any(i["from"] == "C" and i["kind"] == "surprise" and i.get("text")
+                            for i in done["inner"]))
         gut = [x for x in self.mind.c.calls if x["messages"][0]["content"].startswith(prompts.GUT_READ[:40])][-1]
         self.assertIn("more worry about Maya's exam", gut["messages"][1]["content"])
 

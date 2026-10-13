@@ -1,4 +1,3 @@
-import { createLazyMermaidPlugin } from "@cline/ui/components/markdown";
 import { cjk } from "@streamdown/cjk";
 import type { ComponentProps, ReactNode } from "react";
 import { isValidElement, memo } from "react";
@@ -94,7 +93,7 @@ const markdownComponents = {
 	code: MarkdownCode,
 } satisfies Components;
 
-const streamdownPlugins = { cjk, mermaid: createLazyMermaidPlugin() };
+const streamdownPlugins = { cjk };
 
 export type HubStreamdownProps = StreamdownProps;
 
