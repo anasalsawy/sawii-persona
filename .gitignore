@@ -7,3 +7,8 @@ data/
 *.db-shm
 .venv/
 *.egg-info/
+
+# ui/ — vendored Cline webview fork (Node)
+ui/**/node_modules/
+ui/**/dist/
+ui/**/.vite/

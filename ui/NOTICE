@@ -1,0 +1,28 @@
+Sawii Companion UI — third-party notice
+=======================================
+
+This directory is a MODIFIED FORK of the Cline Hub webview.
+
+Original work
+-------------
+  Cline — https://github.com/cline/cline
+  Files taken:  apps/cline-hub/src/webview/            (Vite + React client)
+                apps/cline-hub/src/webview-protocol.ts  (message protocol types)
+  Copyright 2026 Cline Bot Inc.
+  Licensed under the Apache License, Version 2.0 — see LICENSE in this directory.
+
+Modifications (Apache-2.0 §4(b) requires changes to be stated)
+-------------------------------------------------------------
+  * Vendored into the sawii-persona repository under ui/ (structure preserved so
+    the original relative imports keep resolving).
+  * Transport to be replaced: the Cline Hub WebSocket (/browser) is swapped for
+    the sawii-persona backend (GET /v1/events SSE, REST /v1/*, WS /v1/voice).
+  * Cline workspace packages (@cline/core, @cline/shared, @cline/ui) are replaced
+    by local minimal stubs — they are not redistributed here.
+  * UI to be restructured into explicit channels: conversation · inter-lobe ·
+    workbench · feeling. The base shell (rail + stage + view routing) is kept.
+  * Cline branding removed, per Apache-2.0 §6 (the license grants no trademark
+    rights). This product is NOT affiliated with, or endorsed by, Cline Bot Inc.
+
+Apache-2.0 obligations met: LICENSE retained verbatim; NOTICE retained here;
+modified files marked in ui/FORK.md; no trademark use.
