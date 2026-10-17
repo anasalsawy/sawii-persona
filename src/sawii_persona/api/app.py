@@ -231,6 +231,8 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
                         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                     elif ev["type"] == "done":
                         extra = {}
+                        if ev.get("turn_id"):
+                            extra["sawii_turn"] = ev["turn_id"]
                         if "verdict" in ev:
                             extra["sawii_verdict"] = ev["verdict"]
                         if ev.get("inner"):
