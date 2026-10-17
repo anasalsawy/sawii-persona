@@ -159,6 +159,11 @@ class Settings:
     daily_outreach_cap: int = field(default_factory=lambda: _int("DAILY_OUTREACH_CAP", 4))
     min_gap_between_outreach_minutes: int = field(default_factory=lambda: _int("OUTREACH_GAP_MIN", 90))
     background_enabled: bool = field(default_factory=lambda: _bool("BACKGROUND", True))
+    # The persona service also ships a developer console at /app. In production
+    # the user-facing app is the gateway (companion-app), and two UIs on two
+    # domains is how people end up editing the wrong one. Set SERVE_CONSOLE=false
+    # on the deployed backend so exactly one interface exists.
+    serve_console: bool = field(default_factory=lambda: _bool("SERVE_CONSOLE", True))
 
     # --- sleep / subconscious ----------------------------------------------
     sleep_hour: int = field(default_factory=lambda: _int("SLEEP_HOUR", 3))

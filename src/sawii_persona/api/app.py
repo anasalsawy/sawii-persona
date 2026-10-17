@@ -581,13 +581,26 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         await mind.drain(timeout=10)
 
     def companion_route():
-        """The companion client if it has been built, else the old single page."""
+        """The companion client if it has been built, else the old single page.
+
+        When SERVE_CONSOLE is off the backend serves no UI at all: the gateway
+        is the only interface, so there is no second one to confuse it with.
+        """
+        if not settings.serve_console:
+            async def console_disabled(request):
+                return JSONResponse({
+                    "ok": True,
+                    "console": "disabled",
+                    "app": "the companion lives on the gateway, not this service",
+                })
+            return Route("/app", console_disabled, methods=["GET"])
         if os.path.isdir(COMPANION_DIR) and os.path.exists(os.path.join(COMPANION_DIR, "index.html")):
             return Mount("/app", app=StaticFiles(directory=COMPANION_DIR, html=True), name="companion")
         return Route("/app", web_app)
 
     routes = [
-        Route("/", lambda r: RedirectResponse("/app/")),
+        Route("/", lambda r: RedirectResponse("/app/") if settings.serve_console
+              else JSONResponse({"ok": True, "app": "gateway", "health": "/health"})),
         Route("/health", health),
         Route("/health/subsystems", health_subsystems),
         companion_route(),
