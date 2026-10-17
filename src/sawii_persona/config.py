@@ -10,6 +10,46 @@ import os
 from dataclasses import dataclass, field
 
 
+_QUOTES = chr(34) + chr(39)
+
+
+def load_dotenv(path: str = "") -> None:
+    """Populate os.environ from a .env file. Existing env vars always win.
+
+    Minimal on purpose: no dependency, no interpolation, no shell semantics.
+    Lines are ``KEY=value``; ``#`` starts a comment, surrounding quotes are
+    stripped, and an ``export `` prefix is tolerated.
+    """
+    if not path:
+        here = os.path.dirname(os.path.abspath(__file__))
+        for candidate in (
+            os.path.join(os.getcwd(), ".env"),
+            os.path.abspath(os.path.join(here, "..", "..", ".env")),
+        ):
+            if os.path.isfile(candidate):
+                path = candidate
+                break
+        else:
+            return
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.split(" #", 1)[0].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in _QUOTES:
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(f"SAWII_{name}", default)
 
@@ -183,6 +223,9 @@ class Settings:
             self.consult_base_url = self.b.base_url
         if not self.consult_api_key:
             self.consult_api_key = self.b.api_key
+
+
+load_dotenv()
 
 
 def load_settings(**overrides) -> Settings:
