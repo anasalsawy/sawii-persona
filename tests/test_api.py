@@ -141,4 +141,9 @@ class ApiTests(unittest.TestCase):
 
     def test_health_and_app(self):
         self.assertTrue(self.client.get("/health").json()["ok"])
-        self.assertIn("Sawii Persona", self.client.get("/app").text)
+        app = self.client.get("/app").text
+        self.assertIn("Sawii Persona", app)
+        self.assertIn('data-lobe-card="A"', app)
+        health = self.client.get("/health/subsystems").json()
+        self.assertIn("active_count", health["subsystems"]["a_llm"])
+        self.assertEqual(health["subsystems"]["a_llm"]["active_count"], 0)

@@ -1,7 +1,9 @@
 """Things only a multi-lobe mind can do (B and C working while, and after, A talks)."""
+import asyncio
 import json
 import re
 import time
+from types import SimpleNamespace
 
 import helpers  # noqa: F401
 from fakes import last_user, make_a, make_b, make_c
@@ -17,6 +19,7 @@ from sawii_persona.life.initiative import Initiative
 from sawii_persona.life.sleep import Sleep
 from sawii_persona.llm import ChatResult, ScriptedLLM, ToolCall
 from sawii_persona.memory.recall import Recall
+from sawii_persona.mind import _LiveLobes
 
 REX = "my dog Rex stole my chair again this morning"
 LONG = "I hear you. That sounds like a long day. Tell me more about it, I'm listening. Take your time."
@@ -53,6 +56,62 @@ class LobesCase(MindCase):
 
 
 class RememberWhileTalkingTests(LobesCase):
+    async def test_a_opens_its_stream_before_live_lobes_start(self):
+        await self.seed_rex()
+        long_reply = "I hear you. " + ("That sounds like a really difficult and exhausting day " * 3) + "."
+        await self.rebuild(a=make_a(reply=long_reply, chunk_delay=0.01), b=make_b(pick=pick_line("Rex")))
+        events = []
+        a_stream = self.mind.a.stream
+        c_chat = self.mind.c.chat
+        recall_candidates = self.mind.recall.candidates
+
+        async def track_a_stream(*args, **kwargs):
+            events.append("A")
+            async for event in a_stream(*args, **kwargs):
+                yield event
+
+        async def track_b_recall(persona, cue, **kwargs):
+            if kwargs.get("limit") == 24:
+                events.append("B")
+            return await recall_candidates(persona, cue, **kwargs)
+
+        async def track_c_chat(messages, *args, **kwargs):
+            if messages and messages[0].get("content", "").startswith(prompts.GUT_READ[:30]):
+                events.append("C")
+            return await c_chat(messages, *args, **kwargs)
+
+        self.mind.a.stream = track_a_stream
+        self.mind.recall.candidates = track_b_recall
+        self.mind.c.chat = track_c_chat
+
+        await self.mind.chat(self.pid, "work was exhausting today")
+        await self.mind.drain()
+
+        self.assertEqual(events[0], "A")
+        self.assertIn("B", events)
+        self.assertIn("C", events)
+        self.assertGreater(events.index("B"), events.index("A"))
+        self.assertGreater(events.index("C"), events.index("A"))
+
+    async def test_queued_nonmemory_findings_carry_to_the_next_turn(self):
+        persona = await get_persona(self.mind.store, self.pid)
+        inner = asyncio.Queue()
+        inner.put_nowait({"from": "C", "kind": "tone", "text": "They sound relieved."})
+        live = _LiveLobes(self.mind, persona, "late-note-test", "how did that go?", [],
+                          SimpleNamespace(layer_ids=[]), "", [], inner)
+
+        await live.finish([], failed=False)
+
+        row = await self.mind.store.one(
+            "SELECT text, status FROM thoughts WHERE persona_id = ? AND source = 'afterthought'",
+            self.pid)
+        self.assertEqual(row["status"], "pending")
+        self.assertIn("They sound relieved.", row["text"])
+
+        await self.mind.chat(self.pid, "It went well.")
+        self.assertTrue(any("They sound relieved." in prompt for prompt in self.system_prompts()))
+        await self.mind.drain()
+
     async def test_b_interrupts_a_mid_answer_with_a_real_record(self):
         await self.seed_rex()
         await self.rebuild(a=make_a(reply=LONG, chunk_delay=0.03), b=make_b(pick=pick_line("Rex")))

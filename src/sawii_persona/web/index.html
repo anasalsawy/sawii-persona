@@ -15,6 +15,32 @@ header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:
 main{display:grid;grid-template-columns:1fr 320px;gap:0;height:calc(100vh - 57px)}
 @media (max-width:820px){main{grid-template-columns:1fr}aside{display:none}aside.open{display:block;position:fixed;inset:57px 0 0 0;z-index:3}}
 #chat{display:flex;flex-direction:column;min-height:0}
+#brain{display:grid;grid-template-columns:minmax(170px,240px) 1fr;align-items:center;gap:14px;padding:5px 16px 9px;border-bottom:1px solid var(--line);background:var(--panel);min-height:142px}
+#brain svg{display:block;width:100%;height:132px;overflow:visible}
+#brain .shell{fill:url(#brain-depth);stroke:var(--line);stroke-width:2}
+#brain .fold{fill:none;stroke:#d3c7b4;stroke-width:2;opacity:.72}
+#brain .region{fill:#807766;opacity:.42;stroke:#d4c8b5;stroke-width:1.5;transition:fill .25s,opacity .25s;filter:none}
+#brain .region[data-state="working"]{fill:#35c391;opacity:.95;filter:url(#brain-glow);animation:brainPulse 1.3s ease-in-out infinite}
+#brain .region[data-state="recovering"]{fill:#e3a23d;opacity:.95;filter:url(#brain-glow);animation:brainPulse 1.3s ease-in-out infinite}
+#brain .region[data-state="alive"]{fill:#8fbe79;opacity:.8}
+#brain .region[data-state="degraded"]{fill:#e3a23d;opacity:.9}
+#brain .region[data-state="dead"]{fill:#df5c56;opacity:.9}
+#brain .region[data-state="unavailable"]{fill:#8b8790;opacity:.7}
+#brain text{fill:#fff;font:700 12px system-ui,sans-serif;text-anchor:middle;paint-order:stroke;stroke:#302d28;stroke-width:2px;stroke-linejoin:round}
+@keyframes brainPulse{50%{opacity:.58}}
+#lobe-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.lobe{min-width:0;padding:8px 9px;border:1px solid var(--line);border-radius:11px;background:var(--bg)}
+.lobe-head{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:650}
+.lobe-light{width:9px;height:9px;border-radius:50%;background:#918c82;flex:none}
+.lobe[data-state="working"] .lobe-light{background:#35c391;box-shadow:0 0 10px #35c391;animation:brainPulse 1.3s infinite}
+.lobe[data-state="recovering"] .lobe-light{background:#e3a23d;box-shadow:0 0 10px #e3a23d;animation:brainPulse 1.3s infinite}
+.lobe[data-state="alive"] .lobe-light{background:#8fbe79}
+.lobe[data-state="degraded"] .lobe-light{background:#e3a23d}
+.lobe[data-state="dead"] .lobe-light{background:#df5c56}
+.lobe[data-state="unavailable"] .lobe-light{background:#8b8790}
+.lobe-state,.lobe-detail{display:block;margin-left:16px;color:var(--muted);font-size:11px;line-height:1.35}
+.lobe-detail{margin-top:3px;overflow-wrap:anywhere}
+@media(max-width:600px){#brain{grid-template-columns:112px 1fr;gap:8px;padding:4px 9px 8px;min-height:125px}#brain svg{height:112px}#lobe-list{grid-template-columns:1fr;gap:4px}.lobe{padding:4px 7px}.lobe-head{font-size:12px}.lobe-detail{display:none}}
 #log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
 .b{max-width:78%;padding:9px 13px;border-radius:14px;white-space:pre-wrap;word-wrap:break-word}
 .me{align-self:flex-end;background:var(--me)}.them{align-self:flex-start;background:var(--them);border:1px solid var(--line)}
@@ -50,6 +76,34 @@ small{color:var(--muted)}
 </header>
 <main>
   <section id="chat">
+    <section id="brain" aria-label="Live lobe activity">
+      <svg viewBox="0 0 260 150" role="img" aria-labelledby="brain-title brain-desc">
+        <title id="brain-title">Sawii's live brain status</title>
+        <desc id="brain-desc">A is the speaking lobe, B handles memory and checking, and C is the cerebellum gut read.</desc>
+        <defs>
+          <linearGradient id="brain-depth" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#fff" stop-opacity=".9"/>
+            <stop offset=".55" stop-color="#b9a98e" stop-opacity=".64"/>
+            <stop offset="1" stop-color="#786b59" stop-opacity=".8"/>
+          </linearGradient>
+          <filter id="brain-glow" x="-80%" y="-80%" width="260%" height="260%">
+            <feGaussianBlur stdDeviation="4" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <path class="shell" d="M129 20c-9-14-28-15-39-5-16-6-34 3-37 19-17 3-25 20-19 34-12 12-8 32 5 40-3 16 9 29 24 29h87c13 0 22-10 22-22 18-3 28-20 21-36 11-15 4-34-11-41-2-17-20-27-36-21-4-2-10-1-17 3z"/>
+        <path class="region" data-lobe="A" data-state="idle" d="M126 26c-8-13-24-15-34-6-14-4-28 4-30 18-14 3-20 17-14 29-10 10-6 26 5 33-2 12 7 22 19 22h42c8-15 10-32 9-51-1-19 0-34 3-45z"/>
+        <path class="region" data-lobe="B" data-state="idle" d="M133 26c8-13 24-15 34-6 14-4 28 4 30 18 14 3 20 17 14 29 10 10 6 26-5 33 2 12-7 22-19 22h-44c-8-15-10-32-9-51 1-19 0-34-1-45z"/>
+        <path class="region" data-lobe="C" data-state="idle" d="M178 112c13-8 29-4 34 8 5 12-3 23-15 25h-34c6-9 11-20 15-33z"/>
+        <path class="fold" d="M68 47c12-8 25-3 24 8-1 8-12 8-13 17-1 8 12 10 18 2m3-31c-11 7-8 17 1 21m-24 12c8-7 21-2 20 8m23-59c-6 13-2 23 7 28m-45 25c-8 8-5 18 4 22m78-52c-12-8-25-3-24 8 1 8 12 8 13 17 1 8-12 10-18 2m-3-31c11 7 8 17-1 21m24 12c-8-7-21-2-20 8m-23-59c6 13 2 23-7 28m45 25c8 8 5 18-4 22"/>
+        <text x="95" y="81">A</text><text x="162" y="81">B</text><text x="193" y="130">C</text>
+      </svg>
+      <div id="lobe-list" role="status" aria-live="polite">
+        <div class="lobe" data-lobe-card="A" data-state="idle"><div class="lobe-head"><span class="lobe-light"></span>A · voice</div><span class="lobe-state">Checking…</span><span class="lobe-detail">Primary response</span></div>
+        <div class="lobe" data-lobe-card="B" data-state="idle"><div class="lobe-head"><span class="lobe-light"></span>B · memory &amp; checking</div><span class="lobe-state">Checking…</span><span class="lobe-detail">Recall and verification</span></div>
+        <div class="lobe" data-lobe-card="C" data-state="idle"><div class="lobe-head"><span class="lobe-light"></span>C · cerebellum</div><span class="lobe-state">Checking…</span><span class="lobe-detail">Gut read and tone</span></div>
+      </div>
+    </section>
     <div id="log"></div>
     <form id="f"><input id="msg" placeholder="Say something…" autocomplete="off"><button id="mic" type="button" class="ghost" title="Talk (realtime voice)">🎙</button><button>Send</button></form>
   </section>
@@ -76,6 +130,7 @@ const $=s=>document.querySelector(s);
 let KEY=""; try{KEY=localStorage.getItem("sawii_key")||""}catch(e){}
 const H=()=>({"Authorization":"Bearer "+KEY,"Content-Type":"application/json"});
 let lastReplyAt=0, requestStart=0, ws=null, rec=null, speaking=false, audioQ=[], playing=null;
+let brainTimer=null, brainLoading=false;
 
 function fmt(s){s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+"h ":"")+String(m).padStart(h?2:1,"0")+"m "+String(x).padStart(2,"0")+"s"}
 setInterval(()=>{const now=Date.now()/1000;let t=lastReplyAt?"since last reply "+fmt(now-lastReplyAt):"first meeting";if(requestStart)t+=" · thinking "+(now-requestStart).toFixed(1)+"s";$("#clock").textContent=t},250);
@@ -85,13 +140,68 @@ function toast(t){const e=$("#toast");e.textContent=t;e.style.display="block";cl
 
 async function api(path,opt={}){const r=await fetch(path,{...opt,headers:H()});if(r.status==401){KEY="";try{localStorage.removeItem("sawii_key")}catch(e){};$("#gate").style.display="";$("#key").value="";toast("That key didn't work. Paste a valid persona key.");throw new Error("401")}return r.json()}
 
+const LOBES=[
+  {id:"A",label:"Speaking",systems:["a_llm"]},
+  {id:"B",label:"Memory / checking",systems:["b_llm","recall","verifier","memory_store"]},
+  {id:"C",label:"Cerebellum / gut read",systems:["c_llm","psyche"]}
+];
+function paintBrain(payload){
+  const systems=payload.subsystems||{};
+  for(const lobe of LOBES){
+    const records=lobe.systems.map(name=>systems[name]).filter(Boolean);
+    const active=records.reduce((n,r)=>n+(Number(r.active_count)||0),0);
+    const errors=records.filter(r=>["dead","degraded"].includes(r.status));
+    const state=active?(errors.length?"recovering":"working"):errors.some(r=>r.status==="dead")?"dead":
+      errors.length?"degraded":records.some(r=>r.status==="alive")?"alive":
+      records.length?"idle":"unavailable";
+    const card=document.querySelector(`[data-lobe-card="${lobe.id}"]`);
+    const region=document.querySelector(`#brain .region[data-lobe="${lobe.id}"]`);
+    const stateText=card.querySelector(".lobe-state");
+    const detail=card.querySelector(".lobe-detail");
+    const labels={working:"Working now",recovering:"Retrying after an error",alive:"Ready",idle:"Waiting for first use",
+      degraded:"Degraded",dead:"Not responding",unavailable:"Health unavailable"};
+    card.dataset.state=state;
+    region.dataset.state=state;
+    stateText.textContent=active?`${labels[state]} · ${active} active`:(labels[state]||"Unknown");
+    const failure=errors.find(r=>r.last_error_text);
+    detail.textContent=failure?`Last error: ${String(failure.last_error_text).slice(0,180)}`:
+      (active?`${active} request${active===1?"":"s"} in progress`:
+       records.length?`${records.reduce((n,r)=>n+(Number(r.success_count)||0),0)} successful call(s)`:
+       "No health data yet");
+    card.title=detail.textContent;
+  }
+}
+function brainUnavailable(){
+  for(const lobe of LOBES){
+    const card=document.querySelector(`[data-lobe-card="${lobe.id}"]`);
+    card.dataset.state="unavailable";
+    card.querySelector(".lobe-state").textContent="Health unavailable";
+    card.querySelector(".lobe-detail").textContent="Retrying status check…";
+    document.querySelector(`#brain .region[data-lobe="${lobe.id}"]`).dataset.state="unavailable";
+  }
+}
+async function refreshBrain(){
+  if(brainLoading)return;
+  brainLoading=true;
+  try{
+    const response=await fetch("/health/subsystems",{cache:"no-store"});
+    if(!response.ok)throw new Error(`health endpoint returned ${response.status}`);
+    paintBrain(await response.json());
+  }catch(e){brainUnavailable()}
+  finally{brainLoading=false}
+}
+function monitorBrain(){
+  refreshBrain();
+  if(!brainTimer)brainTimer=setInterval(refreshBrain,2500);
+}
+
 async function enter(){
   const p=await api("/v1/persona");$("#gate").style.display="none";
   $("#name").textContent=p.name||"(unnamed persona)";$("#uname").value=p.user_name||"";$("#tz").value=p.timezone||"";
   const pr=await (await fetch("/v1/persona/presets")).json();
   for(const x of pr.presets){const o=document.createElement("option");o.value=x.id;o.textContent=x.title;if(x.id==p.preset)o.selected=true;$("#preset").appendChild(o)}
   const c=await api("/v1/persona/clock");if(c.since_your_last_reply_seconds!=null)lastReplyAt=Date.now()/1000-c.since_your_last_reply_seconds;
-  refresh();listen();
+  refresh();listen();monitorBrain();
 }
 $("#enter").onclick=()=>{const k=$("#key").value.trim();if(!k)return;KEY=k;try{localStorage.setItem("sawii_key",KEY)}catch(e){};enter().catch(e=>{})};
 if(KEY)enter().catch(e=>{});
@@ -115,13 +225,13 @@ function listen(){
 
 $("#f").onsubmit=async ev=>{ev.preventDefault();const t=$("#msg").value.trim();if(!t)return;$("#msg").value="";bubble(t,"me");
   if(ws&&ws.readyState==1){ws.send(JSON.stringify({type:"text",text:t}));return}
-  const d=bubble("","them");requestStart=Date.now()/1000;
+  const d=bubble("","them");requestStart=Date.now()/1000;refreshBrain();
   const r=await fetch("/v1/chat/completions",{method:"POST",headers:H(),body:JSON.stringify({stream:true,messages:[{role:"user",content:t}]})});
   const rd=r.body.getReader(),dec=new TextDecoder();let buf="";
   for(;;){const {value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;
     while((i=buf.indexOf("\n\n"))>=0){const line=buf.slice(0,i).trim();buf=buf.slice(i+2);if(!line.startsWith("data:"))continue;const p=line.slice(5).trim();if(p=="[DONE]")continue;
       try{const j=JSON.parse(p);const c=j.choices[0].delta.content;if(c){d.textContent+=c;$("#log").scrollTop=1e9}if(j.sawii_verdict){const m=document.createElement("div");m.className="meta";m.textContent="verified: "+j.sawii_verdict.level;d.appendChild(m)}}catch(e){}}}
-  requestStart=0;lastReplyAt=Date.now()/1000;setTimeout(refresh,4000)};
+  requestStart=0;lastReplyAt=Date.now()/1000;refreshBrain();setTimeout(refresh,4000)};
 
 $("#save").onclick=async()=>{const body={user_name:$("#uname").value,timezone:$("#tz").value||"UTC"};
   if($("#cname").value.trim()){body.clone={name:$("#cname").value,relationship:$("#crel").value,how_they_talk:$("#ctalk").value,sample_messages:$("#csamples").value,shared_memories:$("#cmem").value};body.name=$("#cname").value}
@@ -142,7 +252,7 @@ $("#mic").onclick=()=>{if(ws){ws.close();ws=null;if(rec)rec.stop();$("#mic").cla
     else if(m.type=="delta"){if(!live){live=bubble("","them");requestStart=Date.now()/1000}live.textContent+=m.text}
     else if(m.type=="say"){speaking=true;const u=new SpeechSynthesisUtterance(m.text);u.onend=()=>{speaking=speechSynthesis.pending||speechSynthesis.speaking};speechSynthesis.speak(u)}
     else if(m.type=="audio"){speaking=true;pendingAudioMeta=m}
-    else if(m.type=="done"){live=null;requestStart=0;lastReplyAt=Date.now()/1000;setTimeout(refresh,4000)}
+    else if(m.type=="done"){live=null;requestStart=0;lastReplyAt=Date.now()/1000;refreshBrain();setTimeout(refresh,4000)}
     else if(m.type=="message"){bubble(m.text,"them","first")}};
   ws.onclose=()=>{ws=null;$("#mic").classList.remove("live");if(rec)try{rec.stop()}catch(e){}}};
 function startRec(){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){toast("This browser has no speech recognition - type, and it will still speak back.");return}

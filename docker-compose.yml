@@ -2,6 +2,8 @@ services:
   persona:
     build: .
     env_file: .env
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     ports: ["8800:8800"]
     volumes: ["persona-data:/data"]
     restart: unless-stopped

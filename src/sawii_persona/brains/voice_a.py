@@ -185,7 +185,8 @@ async def speak(llm: LLM, messages: list[dict], *, tools: list[dict] | None, run
                 result: VoiceResult, max_rounds: int = 4, model: str | None = None,
                 temperature: float = 0.8, inner: "asyncio.Queue | None" = None,
                 on_text: Callable[[str], None] | None = None, max_interruptions: int = 3,
-                max_tokens: int | None = None) -> AsyncIterator[str]:
+                max_tokens: int | None = None, on_first_event: Callable[[], None] | None = None
+                ) -> AsyncIterator[str]:
     """Stream A's answer, executing tool calls between rounds. Yields visible text.
 
     ``inner`` is the inner-voice queue the other lobes write into while A speaks. When it holds
@@ -200,6 +201,7 @@ async def speak(llm: LLM, messages: list[dict], *, tools: list[dict] | None, run
     feel = FeelFilter()
     tool_rounds = 0
     interruptions = 0
+    started_live_work = False
     while True:
         round_text = ""
         said = ""        # what the person has actually seen this round
@@ -212,6 +214,10 @@ async def speak(llm: LLM, messages: list[dict], *, tools: list[dict] | None, run
         stream = llm.stream(msgs, **kwargs)
         try:
             async for ev in stream:
+                if not started_live_work:
+                    started_live_work = True
+                    if on_first_event is not None:
+                        on_first_event()
                 if ev["type"] == "text":
                     round_text += ev["text"]
                     visible = feel.feed(ev["text"])

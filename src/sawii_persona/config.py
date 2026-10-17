@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 
 def _env(name: str, default: str = "") -> str:
@@ -32,6 +33,7 @@ def _float(name: str, default: float) -> float:
 
 
 FEATHERLESS = "https://api.featherless.ai/v1"
+OPENROUTER = "https://openrouter.ai/api/v1"
 
 
 @dataclass
@@ -56,12 +58,29 @@ class ModelEndpoint:
 
 def _endpoint(prefix: str, *, model: str, base: str = FEATHERLESS, timeout: float = 60.0,
               inherit: "ModelEndpoint | None" = None) -> ModelEndpoint:
-    base_url = _env(f"{prefix}_BASE_URL", "") or (inherit.base_url if inherit else base)
-    api_key = _env(f"{prefix}_API_KEY", "") or (inherit.api_key if inherit else _env("FEATHERLESS_API_KEY", ""))
+    endpoint_base = _env(f"{prefix}_BASE_URL", "")
+    shared_base = _env("PROVIDER_BASE_URL", "")
+    auto_openrouter = (prefix == "C" and not endpoint_base and not shared_base
+                       and bool(os.environ.get("OPENROUTER_API_KEY", "").strip()))
+    base_url = (endpoint_base or shared_base
+                or (OPENROUTER if auto_openrouter else (inherit.base_url if inherit else base)))
+    hostname = (urlsplit(base_url).hostname or "").lower()
+    is_featherless = hostname == "featherless.ai" or hostname.endswith(".featherless.ai")
+    provider_key_name = (
+        "OPENROUTER_API_KEY" if hostname == "openrouter.ai" or hostname.endswith(".openrouter.ai") else
+        "GROQ_API_KEY" if hostname == "groq.com" or hostname.endswith(".groq.com") else
+        "GEMINI_API_KEY" if hostname == "generativelanguage.googleapis.com" else ""
+    )
+    inherited_key = inherit.api_key if inherit and inherit.base_url == base_url else ""
+    api_key = (_env(f"{prefix}_API_KEY", "") or _env("PROVIDER_API_KEY", "")
+               or inherited_key
+               or os.environ.get(provider_key_name, "").strip()
+               or (_env("FEATHERLESS_API_KEY", "") if is_featherless else ""))
+    default_model = "openrouter/free" if auto_openrouter else model
     return ModelEndpoint(
         base_url=base_url.rstrip("/"),
         api_key=api_key,
-        model=_env(f"{prefix}_MODEL", model),
+        model=_env(f"{prefix}_MODEL", default_model),
         timeout=_float(f"{prefix}_TIMEOUT", timeout),
         no_think=_bool("DISABLE_THINKING", True),
     )
@@ -86,11 +105,24 @@ class Settings:
     c: ModelEndpoint = field(default_factory=lambda: _endpoint("C", model="Compumacy/Psych_Qwen_32B", timeout=120))
     # Embedder (context broadening + juice novelty).
     embed: ModelEndpoint = field(default_factory=lambda: _endpoint("EMBED", model="Qwen/Qwen3-Embedding-8B", timeout=20))
+    embed_enabled: bool = field(default_factory=lambda: _bool("EMBED_ENABLED", True))
     # Consultants: comma separated model ids on the consult endpoint (default: B's provider).
     consult_models: list[str] = field(default_factory=lambda: [m.strip() for m in _env("CONSULT_MODELS", "").split(",") if m.strip()])
     consult_base_url: str = field(default_factory=lambda: _env("CONSULT_BASE_URL", ""))
     consult_api_key: str = field(default_factory=lambda: _env("CONSULT_API_KEY", ""))
     consult_wait_ms: int = field(default_factory=lambda: _int("CONSULT_WAIT_MS", 300))
+    free_mode: bool = field(default_factory=lambda: _bool("FREE_MODE", True))
+    free_request_interval_seconds: float = field(
+        default_factory=lambda: _float("FREE_REQUEST_INTERVAL_SECONDS", 2.1))
+    free_requests_per_minute: int = field(default_factory=lambda: _int("FREE_REQUESTS_PER_MINUTE", 10))
+    free_max_concurrent_requests: int = field(
+        default_factory=lambda: _int("FREE_MAX_CONCURRENT_REQUESTS", 3))
+    free_tokens_per_minute: int = field(default_factory=lambda: _int("FREE_TOKENS_PER_MINUTE", 0))
+    free_requests_per_day: int = field(default_factory=lambda: _int("FREE_REQUESTS_PER_DAY", 0))
+    free_retry_attempts: int = field(default_factory=lambda: _int("FREE_RETRY_ATTEMPTS", 2))
+    free_max_retry_wait_seconds: float = field(
+        default_factory=lambda: _float("FREE_MAX_RETRY_WAIT_SECONDS", 30.0))
+    free_mode_consultants: bool = field(default_factory=lambda: _bool("FREE_MODE_CONSULTANTS", False))
 
     # --- behaviour ---------------------------------------------------------
     a_tools: bool = field(default_factory=lambda: _bool("A_TOOLS", True))
@@ -159,6 +191,16 @@ class Settings:
     workspace_root: str = ""
 
     def __post_init__(self) -> None:
+        if self.free_request_interval_seconds < 0:
+            raise ValueError("FREE_REQUEST_INTERVAL_SECONDS must be non-negative")
+        if self.free_requests_per_minute < 0 or self.free_tokens_per_minute < 0 or self.free_requests_per_day < 0:
+            raise ValueError("Free-mode request and token limits must be non-negative")
+        if self.free_max_concurrent_requests < 1:
+            raise ValueError("FREE_MAX_CONCURRENT_REQUESTS must be at least one")
+        if self.free_retry_attempts < 0:
+            raise ValueError("FREE_RETRY_ATTEMPTS must be non-negative")
+        if self.free_max_retry_wait_seconds < 0:
+            raise ValueError("FREE_MAX_RETRY_WAIT_SECONDS must be non-negative")
         os.makedirs(self.data_dir, exist_ok=True)
         if not self.db_path:
             self.db_path = _env("DB_PATH", os.path.join(self.data_dir, "persona.db"))

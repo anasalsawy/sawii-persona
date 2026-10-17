@@ -29,8 +29,15 @@ class SubsystemHealth:
     # Running totals; cheap to maintain, enough for a glance.
     success_count: int = 0
     error_count: int = 0
+    active_count: int = 0
     # Subsystem-specific state (e.g. embedder's model name, lane's active jobs).
     extra: dict = field(default_factory=dict)
+
+    def begin(self) -> None:
+        self.active_count += 1
+
+    def end(self) -> None:
+        self.active_count = max(0, self.active_count - 1)
 
     def ok(self, extra: dict | None = None) -> None:
         self.last_success_at = time.monotonic()
@@ -73,6 +80,7 @@ class SubsystemHealth:
             "last_error_text": self.last_error_text,
             "success_count": self.success_count,
             "error_count": self.error_count,
+            "active_count": self.active_count,
             "success_rate": rate,
             "extra": self.extra,
         }

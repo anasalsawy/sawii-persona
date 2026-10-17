@@ -44,7 +44,7 @@ from .context import Scratch, build_messages
 from .embedder import Embedder
 from .identity import get_persona
 from .life.subconscious import Subconscious
-from .llm import LLM, OpenAICompatLLM, ToolCall, extract_json
+from .llm import LLM, OpenAICompatLLM, ProviderPacer, ToolCall, extract_json
 from .memory.recall import Recall
 from .timesense import local_dt
 from .memory.records import Memory
@@ -84,9 +84,17 @@ class Mind:
         self.s = settings
         self.store = store or Store(settings.db_path)
         llms = llms or {}
-        self.a: LLM = llms.get("a") or OpenAICompatLLM(settings.a, name="A")
-        self.b: LLM = llms.get("b") or OpenAICompatLLM(settings.b, name="B")
-        self.c: LLM = llms.get("c") or OpenAICompatLLM(settings.c, name="C")
+        self.provider_pacer = (ProviderPacer(
+            min_interval_seconds=settings.free_request_interval_seconds,
+            retry_attempts=settings.free_retry_attempts,
+            max_retry_wait_seconds=settings.free_max_retry_wait_seconds,
+            requests_per_minute=settings.free_requests_per_minute,
+            tokens_per_minute=settings.free_tokens_per_minute,
+            requests_per_day=settings.free_requests_per_day,
+            max_concurrent_requests=settings.free_max_concurrent_requests) if settings.free_mode else None)
+        self.a: LLM = llms.get("a") or OpenAICompatLLM(settings.a, name="A", pacer=self.provider_pacer)
+        self.b: LLM = llms.get("b") or OpenAICompatLLM(settings.b, name="B", pacer=self.provider_pacer)
+        self.c: LLM = llms.get("c") or OpenAICompatLLM(settings.c, name="C", pacer=self.provider_pacer)
         # Health registry is created early so subsystems can wire into it as
         # they're constructed below.
         from .subsystems import Registry
@@ -96,7 +104,8 @@ class Mind:
         self.b.on_health = self.health_registry.get("b_llm")
         self.c.on_health = self.health_registry.get("c_llm")
         embed_llm = llms["embed"] if "embed" in llms else (
-            OpenAICompatLLM(settings.embed, name="embed") if settings.embed.api_key else None)
+            OpenAICompatLLM(settings.embed, name="embed", pacer=self.provider_pacer)
+            if settings.embed_enabled and settings.embed.api_key else None)
         if embed_llm is not None:
             embed_llm.on_health = self.health_registry.get("embedder_llm")
         self.embedder = Embedder(embed_llm)
@@ -104,9 +113,12 @@ class Mind:
         if "consultants" in llms:
             self.consultants: dict[str, LLM] = llms["consultants"]
         else:
+            consult_models = (settings.consult_models if
+                              not settings.free_mode or settings.free_mode_consultants else [])
             self.consultants = {m.split("/")[-1]: OpenAICompatLLM(
-                ModelEndpoint(settings.consult_base_url, settings.consult_api_key, m, 60), name=m)
-                for m in settings.consult_models}
+                ModelEndpoint(settings.consult_base_url, settings.consult_api_key, m, 60),
+                name=m, pacer=self.provider_pacer)
+                for m in consult_models}
         for name, cons in self.consultants.items():
             cons.on_health = self.health_registry.get(f"consult_{name}")
         self.memory = Memory(self.store, self.embedder)
@@ -204,7 +216,7 @@ class Mind:
             # what the other minds kept thinking about since the last talk (offered once)
             mind_rows = await self.store.all(
                 "SELECT id, text FROM thoughts WHERE persona_id = ? AND status = 'pending' AND source IN "
-                "('reflection','recollection','dream') ORDER BY score DESC, id DESC LIMIT 2", pid)
+                "('reflection','recollection','dream','afterthought') ORDER BY score DESC, id DESC LIMIT 2", pid)
             for r in mind_rows:
                 await self.store.update("thoughts", r["id"], status="offered")
             last_chat = next((t for t in reversed(tail_rows) if t["kind"] == "chat" and t["ended_at"]), None)
@@ -221,11 +233,13 @@ class Mind:
             scratch.dropped = []
             scratch.dissent = ""
 
-            # ---- the other lobes start now, while A speaks
+            # ---- let A claim the first shared-provider request before B/C start
             inner: asyncio.Queue = asyncio.Queue()
             self._active_inner[pid] = inner  # Director reports flow in here while this turn is open
             live_lobes = _LiveLobes(self, persona, turn_id, user_text, tail_rows, recall_res, recall_text, rules, inner)
-            live_lobes.start()
+
+            def start_live_lobes() -> None:
+                live_lobes.start()
 
             # Keep B's credentials fresh so direct_B works and so a running B
             # can keep calling the gateway with the latest webhook even if the
@@ -397,7 +411,7 @@ class Mind:
                 heard = 0
                 async for piece in speak(self.a, messages, tools=offered if use_tools else None, run_tool=run_tool,
                                          result=result, model=self.a_model_for(persona), inner=inner,
-                                         on_text=live_lobes.on_text):
+                                         on_text=live_lobes.on_text, on_first_event=start_live_lobes):
                     while yield_tool:
                         ev = yield_tool.pop(0)
                         kind = ev.get("kind", "")
@@ -424,7 +438,7 @@ class Mind:
                     yield {"type": "delta", "text": fallback}
                 yield {"type": "error", "detail": str(exc)[:200]}
             reply = result.text
-            live_lobes.finish(result.heard, failed)
+            await live_lobes.finish(result.heard, failed)
             await self.memory.finish_turn(turn_id, reply)
             await self.store.update("personas", pid, last_reply_at=now())
             if scratch.correction and not failed:
@@ -833,9 +847,9 @@ class _LiveLobes:
         if rec:
             self.surfaced_layer_ids += rec.layer_ids
 
-    def finish(self, heard: list[dict], failed: bool) -> None:
+    async def finish(self, heard: list[dict], failed: bool) -> None:
         """A stopped talking. Anything still being thought about the reply itself is moot;
-        a memory B is still looking for becomes an 'oh wait' if B finds it."""
+        queued findings carry into the next turn; a late memory becomes an 'oh wait'."""
         self.closed = True
         delivered = False
         for h in heard:
@@ -843,6 +857,20 @@ class _LiveLobes:
                 delivered = True
                 self.surfaced(h["rec"])
                 self.m.spawn(self.m.memory.mark_recalled(self.persona["id"], h["rec"].layer_ids))
+        pending = []
+        while not self.inner.empty():
+            note = self.inner.get_nowait()
+            if note.get("kind") != "memory" and note.get("text"):
+                pending.append(note)
+        if pending:
+            carry = "\n".join(
+                f"{note.get('from', 'Another lobe')} ({note.get('kind', 'note')}): "
+                f"{str(note['text'])[:700]}"
+                for note in pending[:3])
+            await self.m.store.insert(
+                "thoughts", persona_id=self.persona["id"], source="afterthought", score=0.65,
+                text="A finding arrived just after you finished your last reply:\n" + carry,
+                created_at=now())
         for t in self.tasks:
             if t is not self.memory_task and not t.done():
                 t.cancel()

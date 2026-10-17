@@ -279,10 +279,13 @@ A streams tokens ─► FeelFilter (hides the private ⟦feel⟧ suffix) ─► 
    A continues; the person sees one uninterrupted reply
 ```
 
-Rules: at most 3 interruptions per reply; never after A has started its private feeling line; every
-interruption is reported in the stream (`inner` events) and in `done.inner`. If A finishes before a
-lobe does: a memory becomes an "oh wait" follow-up (#2); a live check or gut read is simply dropped
-(B's full review after the turn still catches errors).
+The provider pacer allows a small, configurable number of in-flight requests per API key. A's stream
+therefore does not hold B or C behind a single-request lock; request starts are still spaced and share
+the same rolling quota and provider cooldown. B/C findings that arrive mid-sentence wait for the next
+sentence boundary. At most 3 interruptions are allowed per reply, and none happen after A starts its
+private feeling line. If A finishes first, a late memory becomes an "oh wait" follow-up (#2); other
+already-queued B/C findings become afterthoughts for the next turn. Unfinished live checks/gut reads
+are cancelled, while B's full review and C's full observation still run after the turn.
 
 ---
 
@@ -696,7 +699,8 @@ limited to 40 requests/minute per persona.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | status, available channels, voice mode, workshop type |
-| GET | `/app` | built-in web app (chat, voice, live timer, pop-ups, memory view) |
+| GET | `/app` | built-in web app (chat, voice, live timer, A/B/C brain activity, memory view) |
+| GET | `/health/subsystems` | subsystem health and active request counts for the live A/B/C display |
 | POST | `/admin/personas` | create a persona → `{"id","key"}` (the key is shown once; only its hash is stored) |
 | GET | `/admin/personas` | list personas |
 | GET | `/v1/models` | `[{"id":"sawii-persona"}]` |
@@ -757,20 +761,32 @@ curl -N localhost:8800/v1/chat/completions -H "Authorization: Bearer sp_…" \
 
 All variables are prefixed `SAWII_`. Every model is any OpenAI-compatible endpoint:
 `<LOBE>_BASE_URL`, `<LOBE>_API_KEY`, `<LOBE>_MODEL`, `<LOBE>_TIMEOUT` (base URL and key default to
-Featherless and `SAWII_FEATHERLESS_API_KEY`).
+the shared `PROVIDER_BASE_URL` and `PROVIDER_API_KEY`, then Featherless and
+`SAWII_FEATHERLESS_API_KEY`; per-lobe values take precedence).
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `ADMIN_TOKEN` | - | required to create personas |
 | `FEATHERLESS_API_KEY` | - | default key for all lobes |
+| `PROVIDER_BASE_URL` / `PROVIDER_API_KEY` | Featherless / `FEATHERLESS_API_KEY` | shared OpenAI-compatible endpoint and key; use these to switch providers globally |
 | `PUBLIC_BASE_URL` | `http://localhost:8800` | used to verify Twilio signatures |
 | `DATA_DIR` / `DB_PATH` | `./data` / `<data>/persona.db` | storage |
 | `A_MODEL` (+`_BASE_URL/_API_KEY/_TIMEOUT`) | `Qwen/Qwen3.8-Flash-Next`, 90 s | the voice |
 | `B_MODEL` | `openai/gpt-oss-120b`, 90 s | the adjutant |
-| `C_MODEL` | `Compumacy/Psych_Qwen_32B`, 120 s | the observer |
+| `C_MODEL` | `Compumacy/Psych_Qwen_32B` (or `openrouter/free` when auto-routed), 120 s | the observer |
 | `EMBED_MODEL` | `Qwen/Qwen3-Embedding-8B`, 20 s | embeddings (local hash fallback) |
+| `EMBED_ENABLED` | true | disable remote embeddings and use local hash recall when provider has no embedding endpoint/model |
 | `CONSULT_MODELS` / `CONSULT_BASE_URL` / `CONSULT_API_KEY` | none / B's | parallel minds |
 | `CONSULT_WAIT_MS` | 300 | max wait in `fetch_consults` |
+| `FREE_MODE` | true | enable process-local shared provider pacing and transient retries; set false to disable |
+| `FREE_REQUEST_INTERVAL_SECONDS` | 2.1 | minimum spacing between requests for one provider API key |
+| `FREE_REQUESTS_PER_MINUTE` | 10 | conservative shared rolling-minute request cap per provider key |
+| `FREE_MAX_CONCURRENT_REQUESTS` | 3 | in-flight request limit per provider key; keeps B/C live work from waiting for A's stream to end |
+| `FREE_TOKENS_PER_MINUTE` | 0 | shared estimated-token cap per minute; set from the selected model's quota, zero disables it |
+| `FREE_REQUESTS_PER_DAY` | 0 | shared daily request safety cap; set from the provider quota, zero disables it |
+| `FREE_RETRY_ATTEMPTS` | 2 | additional attempts for HTTP 429/502/503/504 |
+| `FREE_MAX_RETRY_WAIT_SECONDS` | 30 | maximum inline `Retry-After`; longer waits surface the provider error and open a fast-fail cooldown for that key |
+| `FREE_MODE_CONSULTANTS` | false | allow optional parallel consultant calls in free mode |
 | `A_TOOLS` | true | offer tools to A |
 | `SHOW_VERDICT` | false | show B's verdict to the person |
 | `TAIL_TURNS` | 8 | verbatim exchanges in context |
@@ -897,7 +913,7 @@ sawii-persona/
 ## 26. Running it
 
 ```bash
-cp .env.example .env                 # set SAWII_ADMIN_TOKEN and SAWII_FEATHERLESS_API_KEY at minimum
+cp .env.example .env                 # set SAWII_ADMIN_TOKEN and the selected provider API key(s) at minimum
 docker compose up -d                 # or: pip install -e . && sawii-persona serve --port 8800
 
 # create a persona (the printed key IS the persona)
@@ -914,6 +930,32 @@ Any OpenAI-compatible client works: base URL `http://host:8800/v1`, API key = th
 **Deploying on Railway (same workspace as Dual-Lobe).** The repository ships a `Dockerfile` and a
 `/health` probe. Add it as a Railway service pointing at `anasalsawy/sawii-persona`, mount a volume
 on `/data`, and set at minimum `SAWII_ADMIN_TOKEN` and `SAWII_FEATHERLESS_API_KEY`.
+
+**Free-tier mode.** The default A/B/C models continue using Featherless and
+`SAWII_FEATHERLESS_API_KEY`. If `OPENROUTER_API_KEY` is present and there is no explicit C or shared
+provider endpoint, C uses OpenRouter's `openrouter/free` router automatically; this keeps the
+user-facing A model on the existing provider while making C's observation optional and separate.
+On Railway, add `OPENROUTER_API_KEY` as a service variable; with Docker Compose, the host variable
+is passed through. You can override C with `SAWII_C_BASE_URL`, `SAWII_C_API_KEY`, and
+`SAWII_C_MODEL`. A/B may be moved to Groq or Gemini by setting their per-lobe endpoint, model, and
+API key (conventional `GROQ_API_KEY` and `GEMINI_API_KEY` are used only for matching provider
+hosts). Remote embeddings can be disabled with `SAWII_EMBED_ENABLED=false` to use local hash recall.
+Requests sharing an API key (including
+chat, streaming, and embeddings) are serialized and spaced by 2.1 seconds by default; temporary
+429/502/503/504 responses are retried with backoff, honoring `Retry-After` up to the configured wait
+limit. Longer retry hints are surfaced immediately instead of holding a turn for a long quota reset.
+Optional consultants are disabled in free mode even if `SAWII_CONSULT_MODELS` is populated; enable
+them explicitly with `SAWII_FREE_MODE_CONSULTANTS=true`. This coordinator is in-memory and per
+process, so use one service replica or add shared rate-limit coordination before scaling
+horizontally. Request/day counters reset on process restart. Provider quotas and capacity can still
+change; exhausted quotas surface as model errors rather than being silently treated as success.
+
+Set `SAWII_FREE_TOKENS_PER_MINUTE` and `SAWII_FREE_REQUESTS_PER_DAY` to the smallest applicable
+quota across the models sharing that provider key. If the provider has no compatible embedding
+model, set `SAWII_EMBED_ENABLED=false` to avoid repeatedly attempting remote embeddings; local hash
+recall remains available. Token use is estimated from the serialized request size and requested
+output limit, not the provider's final token accounting. The default 10 requests/minute is a
+cautious starting point, not a promise that every provider permits that rate.
 
 ---
 
